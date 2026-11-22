@@ -1,0 +1,19 @@
+[Unit]
+Description=English C2 Quiz Telegram Bot (Multilingual & Autonomous AI Vocabulary)
+After=network.target postgresql.service
+Requires=postgresql.service
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/opt/english_c2_bot
+EnvironmentFile=/opt/english_c2_bot/.env
+ExecStartPre=/opt/english_c2_bot/.venv/bin/python -m database.migrate
+ExecStart=/opt/english_c2_bot/.venv/bin/python main.py
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

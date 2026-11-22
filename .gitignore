@@ -1,0 +1,13 @@
+.env
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+.pytest_cache/
+*.log
+.DS_Store
+english_c2_quiz_bot.zip
+english_c2_quiz_bot.tar.gz
+GITHUB_UPLOAD/
