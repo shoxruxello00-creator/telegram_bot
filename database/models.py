@@ -36,11 +36,15 @@ class Vocabulary(Base):
     translation_uz: Mapped[str] = mapped_column(Text, nullable=False)
     translation_ru: Mapped[str] = mapped_column(Text, nullable=False)
     definition_en: Mapped[str] = mapped_column(Text, nullable=False)
+    basic_example_en: Mapped[str | None] = mapped_column(Text, nullable=True)
     example_en: Mapped[str] = mapped_column(Text, nullable=False)
     example_uz: Mapped[str] = mapped_column(Text, nullable=False)
     example_ru: Mapped[str] = mapped_column(Text, nullable=False)
-    cefr_level: Mapped[str] = mapped_column(String(10), nullable=False, default="C1")
-    category: Mapped[str] = mapped_column(String(64), nullable=False, default="idiom")
+    cefr_level: Mapped[str] = mapped_column(String(32), nullable=False, default="B2–C1")
+    category: Mapped[str] = mapped_column(String(64), nullable=False, default="everyday_upgrade")
+    ielts_usage: Mapped[str | None] = mapped_column(
+        String(128), nullable=True, default="Writing Task 2 & Speaking Part 3"
+    )
     source_name: Mapped[str] = mapped_column(
         String(128), nullable=False, default="Cambridge Dictionary"
     )

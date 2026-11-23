@@ -24,8 +24,37 @@ RESERVE_FILE_PATH = (
     Path(__file__).resolve().parent.parent / "data" / "reserve_vocabulary.json"
 )
 
-ALLOWED_CEFR_LEVELS = {"C1", "C2"}
-ALLOWED_CATEGORIES = {"idiom", "phrasal_verb", "collocation", "advanced_word"}
+# Exact 4 + 2 + 2 + 2 daily distribution for 10 items
+DAILY_CATEGORY_QUOTAS: dict[str, int] = {
+    "everyday_upgrade": 4,
+    "academic_upgrade": 2,
+    "collocation": 2,
+    "phrasal_verb": 2,
+}
+
+ALLOWED_CEFR_LEVELS = {"B2", "B2–C1", "C1", "C1–C2", "C2"}
+ALLOWED_CATEGORIES = {
+    "everyday_upgrade",
+    "academic_upgrade",
+    "collocation",
+    "phrasal_verb",
+    "idiom",
+    "advanced_word",
+}
+LEGACY_CATEGORY_MAP: dict[str, str] = {
+    "idiom": "collocation",
+    "advanced_word": "academic_upgrade",
+    "everyday": "everyday_upgrade",
+    "academic": "academic_upgrade",
+}
+DEFAULT_IELTS_USAGE_BY_CATEGORY: dict[str, str] = {
+    "everyday_upgrade": "Writing Task 2 & Speaking Part 3",
+    "academic_upgrade": "Writing Task 2 (Formal Essays)",
+    "collocation": "Writing Task 2 & Speaking Part 3",
+    "phrasal_verb": "Speaking Part 1–3",
+    "idiom": "Speaking Part 2–3",
+    "advanced_word": "Writing Task 2",
+}
 TRUSTED_SOURCES = {
     "Cambridge Dictionary": "https://dictionary.cambridge.org/dictionary/english/",
     "Oxford Learner's Dictionaries": "https://www.oxfordlearnersdictionaries.com/definition/english/",
@@ -42,11 +71,13 @@ VOCABULARY_ITEM_SCHEMA: dict[str, Any] = {
         "translation_uz",
         "translation_ru",
         "definition_en",
+        "basic_example_en",
         "example_en",
         "example_uz",
         "example_ru",
         "cefr_level",
         "category",
+        "ielts_usage",
         "source_name",
         "options",
         "correct_option",
@@ -57,14 +88,26 @@ VOCABULARY_ITEM_SCHEMA: dict[str, Any] = {
         "translation_uz": {"type": "string", "minLength": 2, "maxLength": 300},
         "translation_ru": {"type": "string", "minLength": 2, "maxLength": 300},
         "definition_en": {"type": "string", "minLength": 5, "maxLength": 400},
+        "basic_example_en": {"type": "string", "minLength": 5, "maxLength": 400},
         "example_en": {"type": "string", "minLength": 10, "maxLength": 400},
         "example_uz": {"type": "string", "minLength": 5, "maxLength": 400},
         "example_ru": {"type": "string", "minLength": 5, "maxLength": 400},
-        "cefr_level": {"type": "string", "enum": ["C1", "C2"]},
+        "cefr_level": {
+            "type": "string",
+            "enum": ["B2", "B2–C1", "C1", "C1–C2", "C2"],
+        },
         "category": {
             "type": "string",
-            "enum": ["idiom", "phrasal_verb", "collocation", "advanced_word"],
+            "enum": [
+                "everyday_upgrade",
+                "academic_upgrade",
+                "collocation",
+                "phrasal_verb",
+                "idiom",
+                "advanced_word",
+            ],
         },
+        "ielts_usage": {"type": "string", "minLength": 2, "maxLength": 120},
         "source_name": {"type": "string", "minLength": 2, "maxLength": 120},
         "source_url": {"type": ["string", "null"]},
         "quiz_question_uz": {"type": ["string", "null"]},
@@ -95,6 +138,48 @@ VOCABULARY_BATCH_SCHEMA: dict[str, Any] = {
 _CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
 _ENGLISH_EXPRESSION_RE = re.compile(r"^[A-Za-z][A-Za-z0-9\s\-'’/(),.]{1,120}$")
+_VERY_ADJECTIVE_RE = re.compile(r"^very\s+[a-z]+(?:\s+[a-z]+)?$", re.IGNORECASE)
+
+
+def is_very_adjective_pattern(simple_word: str) -> bool:
+    """Detect 'very + adjective' basic expressions so we never overuse them."""
+    return bool(_VERY_ADJECTIVE_RE.match((simple_word or "").strip()))
+
+
+def normalize_cefr_level(raw_level: str) -> str:
+    cleaned = sanitize_untrusted_text(raw_level, 20).upper()
+    cleaned = cleaned.replace("-", "–").replace(" ", "")
+    if "B2" in cleaned and "C1" in cleaned:
+        return "B2–C1"
+    if "C1" in cleaned and "C2" in cleaned:
+        return "C1–C2"
+    if cleaned in ALLOWED_CEFR_LEVELS:
+        return cleaned
+    return "B2–C1"
+
+
+def normalize_category(raw_cat: str, for_daily_distribution: bool = False) -> str:
+    cleaned = (
+        sanitize_untrusted_text(raw_cat, 64)
+        .lower()
+        .replace("-", "_")
+        .replace(" ", "_")
+    )
+    if cleaned in LEGACY_CATEGORY_MAP and for_daily_distribution:
+        return LEGACY_CATEGORY_MAP[cleaned]
+    if cleaned in ALLOWED_CATEGORIES:
+        if for_daily_distribution and cleaned in LEGACY_CATEGORY_MAP:
+            return LEGACY_CATEGORY_MAP[cleaned]
+        return cleaned
+    if "everyday" in cleaned or "basic" in cleaned:
+        return "everyday_upgrade"
+    if "academic" in cleaned:
+        return "academic_upgrade"
+    if "collocation" in cleaned:
+        return "collocation"
+    if "phrasal" in cleaned:
+        return "phrasal_verb"
+    return "everyday_upgrade"
 
 
 def sanitize_untrusted_text(value: Any, max_len: int = 350) -> str:
@@ -119,11 +204,13 @@ class VocabularyCandidateModel(BaseModel):
     translation_uz: str = Field(..., min_length=2, max_length=300)
     translation_ru: str = Field(..., min_length=2, max_length=300)
     definition_en: str = Field(..., min_length=5, max_length=400)
+    basic_example_en: str = Field(..., min_length=5, max_length=400)
     example_en: str = Field(..., min_length=10, max_length=400)
     example_uz: str = Field(..., min_length=5, max_length=400)
     example_ru: str = Field(..., min_length=5, max_length=400)
-    cefr_level: str = Field(default="C1")
-    category: str = Field(default="idiom")
+    cefr_level: str = Field(default="B2–C1")
+    category: str = Field(default="everyday_upgrade")
+    ielts_usage: str = Field(default="Writing Task 2 & Speaking Part 3")
     source_name: str = Field(default="Cambridge Dictionary")
     source_url: str | None = Field(default=None)
     quiz_question_uz: str | None = Field(default=None)
@@ -139,8 +226,8 @@ class VocabularyCandidateModel(BaseModel):
         if not _ENGLISH_EXPRESSION_RE.match(cleaned):
             raise ValueError(f"Expression '{cleaned}' does not look like natural English.")
         word_count = len(cleaned.split())
-        if word_count > 10:
-            raise ValueError("Advanced expression is too long (max 10 words).")
+        if word_count > 12:
+            raise ValueError("Advanced expression is too long (max 12 words).")
         return cleaned
 
 
@@ -159,8 +246,9 @@ class GenerationResult:
 
 class AIVocabularyGenerator:
     """
-    Autonomous C1–C2 Vocabulary & Quiz Generator with strict deduplication,
-    JSON schema validation, multi-retry recovery, and unused reserve fallback.
+    Autonomous Everyday -> Advanced IELTS Vocabulary & Quiz Generator
+    enforcing the exact 4 + 2 + 2 + 2 daily category distribution,
+    anti-'very + adjective' filtering, formality nuance notes, and deduplication.
     """
 
     def __init__(self) -> None:
@@ -177,51 +265,93 @@ class AIVocabularyGenerator:
 
     def _build_system_prompt(self) -> str:
         return (
-            "You are an expert Cambridge C1/C2 lexicographer and multilingual curriculum designer "
-            "for Uzbek, Russian, and English learners.\n"
-            "Your task is to generate authentic, natural C1–C2 level English expressions "
-            "(idioms, phrasal verbs, collocations, or high-level academic/literary vocabulary) "
-            "verified against authoritative dictionaries (Cambridge Dictionary, Oxford Learner's Dictionaries, "
-            "Merriam-Webster).\n"
-            "Return ONLY valid JSON matching the requested schema. Do not wrap in markdown or commentary."
+            "You are a senior Cambridge IELTS Examiner and lexicographer designing daily "
+            "Everyday English -> Advanced IELTS English upgrades for Uzbek, Russian, and English learners.\n"
+            "CRITICAL PEDAGOGICAL RULES:\n"
+            "1. Do NOT focus on 'very + adjective' expressions.\n"
+            "2. Do NOT generate only phrasal verbs or obscure idioms.\n"
+            "3. Transform ALL types of everyday English (common verbs, nouns, adjectives, adverbs, "
+            "quantifier phrases, collocations, and everyday sentence starters like 'I think -> I would argue', "
+            "'Deal with a problem -> Address an issue', 'Bad effect -> Detrimental impact') into natural, "
+            "context-appropriate IELTS Speaking & Writing English.\n"
+            "4. Never force an unnatural word replacement; explain differences in formality, register, and meaning.\n"
+            "5. Do not assume every upgrade is C2 — assign realistic levels ('B2–C1', 'C1', 'C1–C2', or 'C2').\n"
+            "Return ONLY valid JSON matching the requested schema."
         )
 
     def _build_user_prompt(
-        self, count: int, excluded_expressions: list[str]
+        self,
+        needed_by_category: dict[str, int],
+        excluded_expressions: list[str],
     ) -> str:
+        total_count = sum(needed_by_category.values())
         excl_sample = excluded_expressions[-400:] if excluded_expressions else []
         excl_text = ", ".join(excl_sample) if excl_sample else "None yet"
 
+        quota_lines = []
+        if needed_by_category.get("everyday_upgrade", 0) > 0:
+            quota_lines.append(
+                f"- {needed_by_category['everyday_upgrade']} items with `category: \"everyday_upgrade\"` "
+                "(Common verbs e.g. help -> facilitate; common nouns e.g. problem -> challenge; "
+                "common adjectives e.g. important -> crucial; common phrases e.g. a lot of -> a considerable amount of; "
+                "everyday sentences e.g. I think -> I would argue; simple expressions e.g. bad effect -> detrimental impact)"
+            )
+        if needed_by_category.get("academic_upgrade", 0) > 0:
+            quota_lines.append(
+                f"- {needed_by_category['academic_upgrade']} items with `category: \"academic_upgrade\"` "
+                "(Academic vocabulary upgrades e.g. make worse -> exacerbate; reduce negative effects -> mitigate)"
+            )
+        if needed_by_category.get("collocation", 0) > 0:
+            quota_lines.append(
+                f"- {needed_by_category['collocation']} items with `category: \"collocation\"` "
+                "(Advanced collocations / natural expressions e.g. play an important role -> play a pivotal role; "
+                "a serious problem -> a pressing issue; deal with a problem -> address an issue)"
+            )
+        if needed_by_category.get("phrasal_verb", 0) > 0:
+            quota_lines.append(
+                f"- {needed_by_category['phrasal_verb']} items with `category: \"phrasal_verb\"` "
+                "(Natural IELTS phrasal verbs e.g. postpone -> put off; encounter -> come across)"
+            )
+        quota_str = "\n".join(quota_lines)
+
         return (
-            f"Generate exactly {count} NEW, distinct C1–C2 English vocabulary items.\n\n"
-            f"CRITICAL RULE: NEVER use any of these previously used expressions (or minor spelling variants):\n"
+            f"Generate exactly {total_count} NEW Everyday English -> Advanced IELTS English items "
+            f"following this exact category distribution:\n{quota_str}\n\n"
+            "STRICT RULES:\n"
+            "- Do NOT use 'very + adjective' for `simple_word`.\n"
+            "- NEVER use any of these previously used `advanced_word` expressions (or minor variants):\n"
             f"[{excl_text}]\n\n"
             "For each item, return an object inside `{\"items\": [...]}` with the exact fields:\n"
-            "- `simple_word`: Simple B1/B2 English equivalent (e.g., \"Give up\")\n"
-            "- `advanced_word`: C1 or C2 English idiom, phrasal verb, collocation, or word (e.g., \"Throw in the towel\")\n"
-            "- `translation_uz`: Accurate, natural Uzbek translation\n"
-            "- `translation_ru`: Accurate, natural Russian translation\n"
-            "- `definition_en`: Clear English definition in one sentence\n"
-            "- `example_en`: Natural C1–C2 English example sentence demonstrating usage\n"
-            "- `example_uz`: Uzbek translation of the example sentence\n"
-            "- `example_ru`: Russian translation of the example sentence\n"
-            "- `cefr_level`: Either \"C1\" or \"C2\"\n"
-            "- `category`: One of \"idiom\", \"phrasal_verb\", \"collocation\", \"advanced_word\"\n"
-            "- `source_name`: Authoritative dictionary source (\"Cambridge Dictionary\", \"Oxford Learner's Dictionaries\", or \"Merriam-Webster\")\n"
-            "- `source_url`: Dictionary URL for the expression\n"
-            "- `quiz_question_uz`: Multiple-choice question prompt in Uzbek testing this expression\n"
-            "- `quiz_question_ru`: Multiple-choice question prompt in Russian testing this expression\n"
-            "- `quiz_question_en`: Multiple-choice question prompt in English testing this expression\n"
-            "- `options`: Array of 4 distinct C1–C2 English expressions [A, B, C, D] (each under 90 characters), where one is the exact `advanced_word` and three are plausible distractors\n"
-            "- `correct_option`: Integer index (0, 1, 2, or 3) corresponding to the correct option in `options`."
+            "- `simple_word`: Everyday / Basic English word, phrase, or clause (e.g., \"Deal with a problem\")\n"
+            "- `advanced_word`: Natural, precise IELTS upgrade (e.g., \"Address an issue\")\n"
+            "- `translation_uz`: Accurate Uzbek translation\n"
+            "- `translation_ru`: Accurate Russian translation\n"
+            "- `definition_en`: Clear English explanation of meaning AND difference in formality/register\n"
+            "- `basic_example_en`: Everyday English sentence using the basic expression (e.g., \"Governments should deal with this problem.\")\n"
+            "- `example_en`: Upgraded IELTS sentence using `advanced_word` naturally (e.g., \"Governments should address this issue.\")\n"
+            "- `example_uz`: Uzbek translation of the upgraded sentence\n"
+            "- `example_ru`: Russian translation of the upgraded sentence\n"
+            "- `cefr_level`: Realistic CEFR level: \"B2–C1\", \"C1\", \"C1–C2\", or \"C2\"\n"
+            "- `category`: One of \"everyday_upgrade\", \"academic_upgrade\", \"collocation\", \"phrasal_verb\"\n"
+            "- `ielts_usage`: Specific IELTS context (e.g., \"Writing Task 2\", \"Speaking Part 3\", \"Writing Task 2 & Formal Essays\", \"Speaking Part 1–3\")\n"
+            "- `source_name`: \"Cambridge Dictionary\", \"Oxford Learner's Dictionaries\", or \"Merriam-Webster\"\n"
+            "- `source_url`: Dictionary URL\n"
+            "- `quiz_question_uz`: Multiple-choice question in Uzbek asking for the best IELTS upgrade for `simple_word`\n"
+            "- `quiz_question_ru`: Multiple-choice question in Russian asking for the best IELTS upgrade for `simple_word`\n"
+            "- `quiz_question_en`: Multiple-choice question in English asking for the best IELTS upgrade for `simple_word`\n"
+            "- `options`: Array of 4 distinct choices [A, B, C, D] (each under 90 chars), one matching `advanced_word` and three plausible distractors\n"
+            "- `correct_option`: Integer index (0, 1, 2, or 3) of the correct choice."
         )
 
     async def _call_ai_api(
-        self, count: int, excluded_expressions: list[str]
+        self,
+        needed_by_category: dict[str, int],
+        excluded_expressions: list[str],
     ) -> dict[str, Any]:
-        """Call configured AI provider (OpenAI / Gemini / Anthropic / OpenAI-compatible) and parse JSON."""
         system_prompt = self._build_system_prompt()
-        user_prompt = self._build_user_prompt(count, excluded_expressions)
+        user_prompt = self._build_user_prompt(
+            needed_by_category, excluded_expressions
+        )
 
         if self.provider in {"openai", "groq", "deepseek", "openrouter", "together"}:
             client_kwargs: dict[str, Any] = {"api_key": self.api_key}
@@ -246,7 +376,11 @@ class AIVocabularyGenerator:
             if primary_model.startswith("models/"):
                 primary_model = primary_model.split("models/", 1)[1]
             candidate_models = [primary_model]
-            for fallback_m in ("gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.5-flash-preview-05-20"):
+            for fallback_m in (
+                "gemini-2.5-flash",
+                "gemini-2.0-flash",
+                "gemini-2.5-flash-preview-05-20",
+            ):
                 if fallback_m not in candidate_models:
                     candidate_models.append(fallback_m)
 
@@ -326,25 +460,29 @@ class AIVocabularyGenerator:
         raise ValueError("AI response is neither a JSON object nor a JSON array.")
 
     def validate_and_sanitize_item(
-        self, raw_item: dict[str, Any]
+        self,
+        raw_item: dict[str, Any],
+        for_daily_distribution: bool = False,
     ) -> dict[str, Any]:
         """
-        Sanitize untrusted fields, repair minor option indexing if needed,
-        and validate against JSON Schema and Pydantic.
+        Sanitize untrusted fields, derive fallback basic_example_en / ielts_usage
+        if omitted on legacy items, and validate against JSON Schema and Pydantic.
         """
         adv = sanitize_untrusted_text(raw_item.get("advanced_word", ""), 120)
         simple = sanitize_untrusted_text(raw_item.get("simple_word", ""), 120)
-        cefr = sanitize_untrusted_text(raw_item.get("cefr_level", "C1"), 10).upper()
-        if cefr not in ALLOWED_CEFR_LEVELS:
-            cefr = "C1"
-
-        category = (
-            sanitize_untrusted_text(raw_item.get("category", "idiom"), 64)
-            .lower()
-            .replace(" ", "_")
+        cefr = normalize_cefr_level(raw_item.get("cefr_level", "B2–C1"))
+        category = normalize_category(
+            raw_item.get("category", "everyday_upgrade"),
+            for_daily_distribution=for_daily_distribution,
         )
-        if category not in ALLOWED_CATEGORIES:
-            category = "idiom"
+
+        ielts_usage = sanitize_untrusted_text(
+            raw_item.get("ielts_usage")
+            or DEFAULT_IELTS_USAGE_BY_CATEGORY.get(
+                category, "Writing Task 2 & Speaking Part 3"
+            ),
+            120,
+        )
 
         source_name = sanitize_untrusted_text(
             raw_item.get("source_name", "Cambridge Dictionary"), 120
@@ -367,11 +505,9 @@ class AIVocabularyGenerator:
         if not isinstance(correct_idx, int) or not (0 <= correct_idx < 4):
             correct_idx = 0
 
-        # Ensure exact 4 distinct options containing `adv` at `correct_idx`
         if len(options) != 4:
             raise ValueError("Quiz options must contain exactly 4 choices.")
 
-        # Verify `adv` is at `options[correct_idx]` or locate it
         norm_adv = normalize_expression(adv)
         matched_idx = None
         for idx, opt in enumerate(options):
@@ -385,7 +521,6 @@ class AIVocabularyGenerator:
         else:
             options[correct_idx] = adv
 
-        # Check all 4 options are distinct
         norm_opts = {normalize_expression(o) for o in options}
         if len(norm_opts) != 4:
             raise ValueError("Quiz options contain duplicate choices.")
@@ -397,19 +532,34 @@ class AIVocabularyGenerator:
         example_uz = sanitize_untrusted_text(raw_item.get("example_uz", ""), 350)
         example_ru = sanitize_untrusted_text(raw_item.get("example_ru", ""), 350)
 
+        raw_basic_ex = raw_item.get("basic_example_en")
+        if raw_basic_ex and str(raw_basic_ex).strip():
+            basic_example_en = sanitize_untrusted_text(raw_basic_ex, 350)
+        else:
+            pattern = re.compile(re.escape(adv), flags=re.IGNORECASE)
+            if pattern.search(example_en):
+                rep = pattern.sub(simple.lower(), example_en, count=1)
+                basic_example_en = sanitize_untrusted_text(
+                    rep[0].upper() + rep[1:] if rep else example_en, 350
+                )
+            else:
+                basic_example_en = sanitize_untrusted_text(
+                    f"In everyday English: \"{simple}\".", 350
+                )
+
         q_uz = sanitize_untrusted_text(
             raw_item.get("quiz_question_uz")
-            or f"«{simple}» ({translation_uz}) ma'nosini bildiruvchi {cefr} darajadagi iborani toping:",
+            or f"«{simple}» ({translation_uz}) ifodasining tabiiy va yuqori darajadagi IELTS muqobilini toping:",
             250,
         )
         q_ru = sanitize_untrusted_text(
             raw_item.get("quiz_question_ru")
-            or f"Выберите выражение уровня {cefr} со значением «{simple}» ({translation_ru}):",
+            or f"Выберите продвинутый вариант IELTS для повседневного выражения «{simple}» ({translation_ru}):",
             250,
         )
         q_en = sanitize_untrusted_text(
             raw_item.get("quiz_question_en")
-            or f"Which {cefr} expression best replaces \"{simple}\" ({definition_en})?",
+            or f"Which advanced IELTS expression best upgrades \"{simple}\" ({ielts_usage})?",
             250,
         )
 
@@ -419,11 +569,13 @@ class AIVocabularyGenerator:
             "translation_uz": translation_uz,
             "translation_ru": translation_ru,
             "definition_en": definition_en,
+            "basic_example_en": basic_example_en,
             "example_en": example_en,
             "example_uz": example_uz,
             "example_ru": example_ru,
             "cefr_level": cefr,
             "category": category,
+            "ielts_usage": ielts_usage,
             "source_name": source_name,
             "source_url": source_url,
             "quiz_question_uz": q_uz,
@@ -433,10 +585,7 @@ class AIVocabularyGenerator:
             "correct_option": correct_idx,
         }
 
-        # Validate against JSON Schema
         jsonschema.validate(instance=sanitized_dict, schema=VOCABULARY_ITEM_SCHEMA)
-
-        # Validate with Pydantic
         model = VocabularyCandidateModel(**sanitized_dict)
         norm_expr = normalize_expression(model.advanced_word)
         if not norm_expr:
@@ -446,14 +595,32 @@ class AIVocabularyGenerator:
         result["normalized_expression"] = norm_expr
         return result
 
-    def _load_unused_from_reserve(
+    @staticmethod
+    def _compute_target_quotas(required_count: int) -> dict[str, int]:
+        if required_count == 10:
+            return dict(DAILY_CATEGORY_QUOTAS)
+        # Proportional fallback if custom DAILY_WORD_COUNT is used
+        quotas = {
+            "everyday_upgrade": max(1, round(required_count * 0.4)),
+            "academic_upgrade": max(0, round(required_count * 0.2)),
+            "collocation": max(0, round(required_count * 0.2)),
+            "phrasal_verb": 0,
+        }
+        quotas["phrasal_verb"] = max(
+            0, required_count - sum(quotas.values())
+        )
+        return quotas
+
+    def _load_unused_from_reserve_by_quotas(
         self,
-        needed_count: int,
+        needed_by_category: dict[str, int],
         known_normalized: set[str],
+        very_count_so_far: int = 0,
     ) -> tuple[list[dict[str, Any]], int]:
         """
-        Load unused C1–C2 items from `data/reserve_vocabulary.json` that have
-        NEVER been used in PostgreSQL (`known_normalized`).
+        Load unused items from `data/reserve_vocabulary.json` respecting the
+        4 + 2 + 2 + 2 category quotas (`everyday_upgrade`, `academic_upgrade`,
+        `collocation`, `phrasal_verb`) and the anti-'very + adjective' filter.
         """
         if not RESERVE_FILE_PATH.exists():
             return [], 0
@@ -464,17 +631,28 @@ class AIVocabularyGenerator:
             logger.error("Failed to read reserve vocabulary file: %s", exc)
             return [], 0
 
+        remaining = dict(needed_by_category)
+        total_needed = sum(remaining.values())
         selected: list[dict[str, Any]] = []
         rejected_dups = 0
+        very_count = very_count_so_far
 
+        # First pass: strictly match needed category quotas
+        unmatched_valid: list[dict[str, Any]] = []
         for raw_item in raw_list:
-            if len(selected) >= needed_count:
+            if len(selected) >= total_needed:
                 break
             try:
-                validated = self.validate_and_sanitize_item(raw_item)
+                validated = self.validate_and_sanitize_item(
+                    raw_item, for_daily_distribution=True
+                )
             except Exception as exc:
                 logger.warning("Skipping invalid reserve item: %s", exc)
                 continue
+
+            if is_very_adjective_pattern(validated["simple_word"]):
+                if very_count >= 1:
+                    continue
 
             is_dup, norm_expr = is_duplicate_or_near_duplicate(
                 validated["advanced_word"], known_normalized
@@ -483,11 +661,42 @@ class AIVocabularyGenerator:
                 rejected_dups += 1
                 continue
 
-            validated["normalized_expression"] = norm_expr
+            cat = validated["category"]
+            if remaining.get(cat, 0) > 0:
+                validated["normalized_expression"] = norm_expr
+                known_normalized.add(norm_expr)
+                if is_very_adjective_pattern(validated["simple_word"]):
+                    very_count += 1
+                remaining[cat] -= 1
+                selected.append(validated)
+            else:
+                unmatched_valid.append(validated)
+
+        # Second pass: if a category in reserve was exhausted, fill remaining slots from other unused valid items
+        for cand in unmatched_valid:
+            if len(selected) >= total_needed:
+                break
+            is_dup, norm_expr = is_duplicate_or_near_duplicate(
+                cand["advanced_word"], known_normalized
+            )
+            if is_dup:
+                continue
+            cand["normalized_expression"] = norm_expr
             known_normalized.add(norm_expr)
-            selected.append(validated)
+            selected.append(cand)
 
         return selected, rejected_dups
+
+    def _load_unused_from_reserve(
+        self,
+        needed_count: int,
+        known_normalized: set[str],
+    ) -> tuple[list[dict[str, Any]], int]:
+        quotas = self._compute_target_quotas(needed_count)
+        return self._load_unused_from_reserve_by_quotas(
+            needed_by_category=quotas,
+            known_normalized=known_normalized,
+        )
 
     async def generate_daily_lesson(
         self,
@@ -497,13 +706,18 @@ class AIVocabularyGenerator:
         max_retries: int = 4,
     ) -> GenerationResult:
         """
-        Main entry point to generate and save a daily lesson of 10 unique C1–C2 expressions.
-        Idempotent for `target_date`: if the lesson already exists, returns immediately.
+        Generate and save a daily lesson of 10 unique Everyday -> Advanced IELTS upgrades
+        with the exact 4 + 2 + 2 + 2 category distribution:
+        - 4 everyday_upgrade
+        - 2 academic_upgrade
+        - 2 collocation
+        - 2 phrasal_verb
+        Idempotent for `target_date`.
         """
         lesson_date = target_date or settings.today()
         required_count = word_count or settings.DAILY_WORD_COUNT
 
-        # 1. Check idempotency: does a lesson for this date already exist?
+        # 1. Check idempotency
         existing_lesson = await crud.get_daily_lesson_by_date(session, lesson_date)
         if existing_lesson is not None:
             logger.info("Daily lesson for %s already exists; skipping generation.", lesson_date)
@@ -518,21 +732,25 @@ class AIVocabularyGenerator:
         # 2. Load ALL historical normalized expressions from PostgreSQL
         known_normalized = await crud.get_all_normalized_expressions(session)
         logger.info(
-            "Starting generation for %s. Historical vocabulary count in DB: %d",
+            "Starting 4+2+2+2 IELTS generation for %s. Historical vocabulary count in DB: %d",
             lesson_date,
             len(known_normalized),
         )
 
+        target_quotas = self._compute_target_quotas(required_count)
+        remaining_quotas = dict(target_quotas)
+
         accepted_items: list[dict[str, Any]] = []
         rejected_duplicates = 0
         retry_count = 0
+        very_pattern_count = 0
         last_error: str | None = None
         used_fallback = False
 
         # 3. Try AI API generation with automatic retry mechanism
         if self._has_valid_api_key():
             for attempt in range(1, max_retries + 1):
-                needed = required_count - len(accepted_items)
+                needed = sum(remaining_quotas.values())
                 if needed <= 0:
                     break
 
@@ -540,10 +758,8 @@ class AIVocabularyGenerator:
                     retry_count += 1
 
                 try:
-                    # Ask AI for a few extra candidates when retrying to absorb potential duplicates
-                    request_batch_size = needed if attempt == 1 else min(needed + 3, 15)
                     raw_payload = await self._call_ai_api(
-                        count=request_batch_size,
+                        needed_by_category=remaining_quotas,
                         excluded_expressions=sorted(known_normalized),
                     )
                     jsonschema.validate(
@@ -552,14 +768,29 @@ class AIVocabularyGenerator:
                     raw_items = raw_payload.get("items", [])
 
                     for raw_item in raw_items:
-                        if len(accepted_items) >= required_count:
+                        if sum(remaining_quotas.values()) <= 0:
                             break
                         try:
-                            validated = self.validate_and_sanitize_item(raw_item)
+                            validated = self.validate_and_sanitize_item(
+                                raw_item, for_daily_distribution=True
+                            )
                         except Exception as val_err:
                             logger.warning(
                                 "AI item failed schema/content validation: %s", val_err
                             )
+                            continue
+
+                        # Reject excessive 'very + adjective' patterns
+                        if is_very_adjective_pattern(validated["simple_word"]):
+                            if very_pattern_count >= 1:
+                                logger.info(
+                                    "Rejected 'very + adjective' item '%s' to maintain variety.",
+                                    validated["simple_word"],
+                                )
+                                continue
+
+                        cat = validated["category"]
+                        if remaining_quotas.get(cat, 0) <= 0:
                             continue
 
                         is_dup, norm_expr = is_duplicate_or_near_duplicate(
@@ -576,6 +807,9 @@ class AIVocabularyGenerator:
 
                         validated["normalized_expression"] = norm_expr
                         known_normalized.add(norm_expr)
+                        if is_very_adjective_pattern(validated["simple_word"]):
+                            very_pattern_count += 1
+                        remaining_quotas[cat] -= 1
                         accepted_items.append(validated)
 
                 except Exception as api_err:
@@ -585,12 +819,12 @@ class AIVocabularyGenerator:
             last_error = "AI_API_KEY not configured; using unused reserve vocabulary pool."
             logger.info(last_error)
 
-        # 4. Fallback to unused reserve vocabulary if AI API failed or returned < required_count
+        # 4. Fallback to unused reserve vocabulary respecting remaining 4+2+2+2 category quotas
         if len(accepted_items) < required_count:
-            still_needed = required_count - len(accepted_items)
-            reserve_items, reserve_dups = self._load_unused_from_reserve(
-                needed_count=still_needed,
+            reserve_items, reserve_dups = self._load_unused_from_reserve_by_quotas(
+                needed_by_category=remaining_quotas,
                 known_normalized=known_normalized,
+                very_count_so_far=very_pattern_count,
             )
             rejected_duplicates += reserve_dups
             if reserve_items:
@@ -600,7 +834,7 @@ class AIVocabularyGenerator:
         # 5. NEVER repeat old words if we still couldn't find 10 unique words
         if len(accepted_items) < required_count:
             err_msg = (
-                f"Could only obtain {len(accepted_items)}/{required_count} unique C1-C2 "
+                f"Could only obtain {len(accepted_items)}/{required_count} unique IELTS "
                 f"expressions. Refusing to repeat previously used words. Last error: {last_error}"
             )
             logger.error(err_msg)
@@ -623,8 +857,17 @@ class AIVocabularyGenerator:
                 error_message=err_msg,
             )
 
-        # 6. Atomically save the 10 unique words and daily lesson inside PostgreSQL transaction
-        final_items = accepted_items[:required_count]
+        # Order the final 10 items cleanly: 4 everyday_upgrade, 2 academic_upgrade, 2 collocation, 2 phrasal_verb
+        category_order = {
+            "everyday_upgrade": 0,
+            "academic_upgrade": 1,
+            "collocation": 2,
+            "phrasal_verb": 3,
+        }
+        final_items = sorted(
+            accepted_items[:required_count],
+            key=lambda x: category_order.get(x["category"], 99),
+        )
         status_label = "FALLBACK_RESERVE" if used_fallback else "SUCCESS"
         try:
             daily_lesson = await crud.save_generated_daily_lesson(
@@ -642,7 +885,7 @@ class AIVocabularyGenerator:
                 error_message=last_error if used_fallback else None,
             )
             logger.info(
-                "Successfully saved %d unique C1–C2 expressions for %s (status=%s, rejected_dups=%d)",
+                "Successfully saved %d unique IELTS expressions (4+2+2+2) for %s (status=%s, rejected_dups=%d)",
                 len(final_items),
                 lesson_date,
                 status_label,
