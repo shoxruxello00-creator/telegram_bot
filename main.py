@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 import sys
@@ -5,7 +6,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from sqlalchemy import text
-from telegram import Update
+from telegram import MenuButtonWebApp, Update, WebAppInfo
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -41,7 +42,8 @@ from handlers.stats import (
 from services.bonus_pack_service import ensure_bonus_packs_seeded
 from services.broadcast_service import resume_incomplete_broadcasts
 from services.i18n import i18n
-from services.lesson_service import ensure_daily_lesson
+from services.lesson_service import ensure_daily_lesson, notify_admins
+from services.miniapp_api import MiniAppHTTPRequestHandler, set_main_event_loop
 from services.scheduler_service import setup_scheduled_jobs
 
 logging.basicConfig(
@@ -77,16 +79,16 @@ class _ReusableThreadingHTTPServer(ThreadingHTTPServer):
 
 def start_health_server() -> None:
     """
-    Unconditionally bind an HTTP health-check server on 0.0.0.0:$PORT (default 10000)
-    so Render Web Service immediately detects an open port and never times out.
+    Unconditionally bind the HTTP server (Health Check + Mini App REST API + Static SPA)
+    on 0.0.0.0:$PORT (default 10000) so Render Web Service detects an open port immediately.
     """
     raw_port = os.getenv("PORT", "10000").strip()
     port = int(raw_port) if raw_port.isdigit() else 10000
     try:
-        server = _ReusableThreadingHTTPServer(("0.0.0.0", port), _HealthCheckHandler)
+        server = _ReusableThreadingHTTPServer(("0.0.0.0", port), MiniAppHTTPRequestHandler)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
-        logger.info("Render health-check HTTP server is listening on 0.0.0.0:%d", port)
+        logger.info("Render Health & Mini App HTTP server is listening on 0.0.0.0:%d", port)
     except Exception as exc:
         logger.warning("Could not bind health-check server on port %d: %s", port, exc)
 
@@ -121,6 +123,7 @@ async def post_init(application: Application) -> None:
     4. Register 00:05, 08:00, and 20:00 scheduled jobs in Asia/Tashkent timezone.
     5. Resume any unfinished Admin Broadcast job after a Render restart.
     """
+    set_main_event_loop(asyncio.get_running_loop())
     await _apply_sql_migrations()
     async with get_session() as session:
         await ensure_bonus_packs_seeded(session)
@@ -136,6 +139,28 @@ async def post_init(application: Application) -> None:
         )
     setup_scheduled_jobs(application)
     await resume_incomplete_broadcasts(application.bot)
+
+    webapp_url = (
+        os.getenv("WEBAPP_URL", "").strip()
+        or os.getenv("RENDER_EXTERNAL_URL", "").strip()
+    )
+    if webapp_url.startswith("https://"):
+        logger.info("🌐 MINI APP URL FOR BOTFATHER: %s", webapp_url)
+        try:
+            await application.bot.set_chat_menu_button(
+                menu_button=MenuButtonWebApp(
+                    text="🚀 IELTS App",
+                    web_app=WebAppInfo(url=webapp_url),
+                )
+            )
+            await notify_admins(
+                application.bot,
+                f"🚀 <b>Voxy IELTS Mini App tayyor!</b>\n\n"
+                f"🔗 <b>BotFather uchun Mini App URL:</b>\n"
+                f"<code>{webapp_url}</code>",
+            )
+        except Exception as exc:
+            logger.warning("Could not set MenuButtonWebApp automatically: %s", exc)
 
 
 async def post_shutdown(application: Application) -> None:

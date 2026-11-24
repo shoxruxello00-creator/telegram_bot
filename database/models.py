@@ -120,6 +120,7 @@ class UserSettings(Base):
     language_code: Mapped[str] = mapped_column(String(5), nullable=False, default="uz")
     reminders_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     broadcast_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    daily_goal: Mapped[int] = mapped_column(Integer, nullable=False, default=10)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -494,4 +495,46 @@ class BroadcastRecipient(Base):
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     sent_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
+    )
+
+
+class UserJourneyProgress(Base):
+    __tablename__ = "user_journey_progress"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id", "node_id", name="uq_user_journey_progress_user_node"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("users.user_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    node_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    stars: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    best_score: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    completed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class UserGameRun(Base):
+    __tablename__ = "user_game_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("users.user_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    game_mode: Mapped[str] = mapped_column(String(64), nullable=False)
+    score: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    earned_xp: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    played_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
     )

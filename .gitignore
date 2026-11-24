@@ -11,3 +11,5 @@ env/
 english_c2_quiz_bot.zip
 english_c2_quiz_bot.tar.gz
 GITHUB_UPLOAD/
+webapp/node_modules/
+data/.local_miniapp_state.json
