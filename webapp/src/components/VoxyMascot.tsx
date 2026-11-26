@@ -296,7 +296,7 @@ export const VoxyMascot: React.FC<VoxyMascotProps> = ({
         >
           <div className="flex items-center gap-1.5 mb-0.5">
             <span className="text-[11px] font-bold uppercase tracking-wider text-voxy-blue">
-              VOXY AI COACH
+              SHOXRUX AI
             </span>
             <span className="inline-block w-1.5 h-1.5 rounded-full bg-voxy-green animate-pulse" />
           </div>

@@ -101,7 +101,7 @@ export const App: React.FC = () => {
         <VoxyMascot mood="loading" size="lg" />
         <div className="space-y-1.5 max-w-xs">
           <h1 className="text-lg font-display font-bold text-voxy-text">
-            Voxy IELTS Arena
+            Shoxrux AI
           </h1>
           <p className="text-xs text-voxy-muted">
             Synchronizing your Everyday → Advanced IELTS vocabulary, streak & league rank...

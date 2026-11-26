@@ -149,13 +149,13 @@ async def post_init(application: Application) -> None:
         try:
             await application.bot.set_chat_menu_button(
                 menu_button=MenuButtonWebApp(
-                    text="🚀 IELTS App",
+                    text="🚀 Shoxrux AI",
                     web_app=WebAppInfo(url=webapp_url),
                 )
             )
             await notify_admins(
                 application.bot,
-                f"🚀 <b>Voxy IELTS Mini App tayyor!</b>\n\n"
+                f"🚀 <b>Shoxrux AI IELTS Mini App tayyor!</b>\n\n"
                 f"🔗 <b>BotFather uchun Mini App URL:</b>\n"
                 f"<code>{webapp_url}</code>",
             )
