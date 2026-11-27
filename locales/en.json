@@ -91,5 +91,15 @@
   "admin_fc_next": "KEYINGI SO‘Z",
   "admin_fc_prev": "OLDINGI SO‘Z",
   "admin_fc_flip_back": "🔄 Reveal Answer & Example",
-  "admin_fc_flip_front": "🔄 Flip Back to Front"
+  "admin_fc_flip_front": "🔄 Flip Back to Front",
+  "menu_mock_test": "📝 MOCK TEST",
+  "mock_btn_my_tests": "🔓 MY MOCK TESTS",
+  "mock_btn_contact_admin": "💬 CONTACT ADMIN",
+  "mock_btn_write_admin": "💬 MESSAGE ADMIN",
+  "mock_btn_back": "🔙 BACK",
+  "mock_btn_start_test": "🚀 Start Test",
+  "mock_btn_download_materials": "📥 Download / Open Materials",
+  "mock_support_message": "For detailed information about Mock Tests, please contact the admin: @n0omg",
+  "mock_grant_notification": "🎉 Congratulations! You have been granted access to a new IELTS Mock Test. You can open it in MOCK TEST → MY MOCK TESTS.",
+  "admin_mock_menu": "📝 MOCK TEST MANAGEMENT"
 }

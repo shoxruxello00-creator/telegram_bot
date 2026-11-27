@@ -14,6 +14,7 @@ export type ActiveModal =
   | 'game'
   | 'referrals'
   | 'admin_library'
+  | 'mock_tests'
   | null;
 
 interface QuizContextConfig {
@@ -44,6 +45,7 @@ interface AppState {
   openGameMode: (mode: GameModeId) => void;
   openReferrals: () => void;
   openAdminLibrary: () => void;
+  openMockTests: () => void;
   closeModal: () => void;
 }
 
@@ -98,6 +100,11 @@ export const useAppStore = create<AppState>((set) => ({
   openAdminLibrary: () =>
     set({
       activeModal: 'admin_library',
+      voxyMood: 'welcome',
+    }),
+  openMockTests: () =>
+    set({
+      activeModal: 'mock_tests',
       voxyMood: 'welcome',
     }),
   closeModal: () =>

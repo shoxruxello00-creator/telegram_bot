@@ -431,3 +431,75 @@ export interface AdminQuizSubmitResponse {
     example_en: string;
   }>;
 }
+
+export interface MockTestMaterialItem {
+  id: number;
+  file_type: string;
+  material_role: string;
+  title: string;
+  telegram_file_id?: string | null;
+  file_name?: string | null;
+  mime_type?: string | null;
+  text_content?: string | null;
+  position: number;
+}
+
+export interface MockTestItem {
+  id: number;
+  title: string;
+  category: string;
+  description: string;
+  price_uzs: number;
+  price_formatted: string;
+  duration_minutes: number;
+  questions_count: number;
+  instructions: string;
+  preview_image_file_id?: string | null;
+  is_published: boolean;
+  is_active: boolean;
+  materials_count?: number;
+  material_types?: string[];
+  is_unlocked?: boolean;
+  access_expires_at?: string | null;
+  access_duration_label?: string | null;
+  support_username?: string;
+  support_url?: string;
+  active_users_count?: number;
+  files?: MockTestMaterialItem[];
+}
+
+export interface MockTestsCatalogResponse {
+  ok: boolean;
+  categories: string[];
+  tests: MockTestItem[];
+  my_tests: MockTestItem[];
+  support_username: string;
+  support_url: string;
+}
+
+export interface AdminMockTestHolder {
+  user_id: number;
+  username: string;
+  full_name: string;
+  mock_test_id: number;
+  test_title: string;
+  category: string;
+  duration_label: string;
+  granted_by: number;
+  granted_at: string;
+  expires_at?: string | null;
+}
+
+export interface AdminMockTestsResponse {
+  ok: boolean;
+  admin_role: string;
+  tests: MockTestItem[];
+  holders: AdminMockTestHolder[];
+  users: Array<{
+    user_id: number;
+    username: string;
+    full_name: string;
+    xp: number;
+    streak: number;
+  }>;
+}

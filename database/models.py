@@ -755,3 +755,159 @@ class VocabularyReserve(Base):
 
     def get_options(self) -> list[str]:
         return [self.option_a, self.option_b, self.option_c, self.option_d]
+
+
+# ==============================================================================
+# IELTS MOCK TEST SYSTEM MODELS (NO PAYMENTS / ADMIN-CONFIGURED UZS CATALOG)
+# ==============================================================================
+
+
+class MockTest(Base):
+    __tablename__ = "mock_tests"
+    __table_args__ = (
+        CheckConstraint("price_uzs >= 0", name="ck_mock_tests_price_non_negative"),
+        CheckConstraint(
+            "duration_minutes > 0", name="ck_mock_tests_duration_positive"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    category: Mapped[str] = mapped_column(
+        String(64), nullable=False, default="Full Mock Test", index=True
+    )
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    price_uzs: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    duration_minutes: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=60
+    )
+    questions_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=40
+    )
+    instructions: Mapped[str | None] = mapped_column(Text, nullable=True)
+    preview_image_file_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_published: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, index=True
+    )
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, index=True
+    )
+    created_by: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    files: Mapped[list["MockTestFile"]] = relationship(
+        "MockTestFile",
+        back_populates="mock_test",
+        cascade="all, delete-orphan",
+        order_by="MockTestFile.position",
+    )
+
+
+class MockTestFile(Base):
+    __tablename__ = "mock_test_files"
+    __table_args__ = (
+        CheckConstraint(
+            "file_type IN ('pdf', 'audio', 'voice', 'image', 'text', 'document')",
+            name="ck_mock_test_files_type",
+        ),
+        CheckConstraint(
+            "material_role IN ('question_paper', 'audio_track', 'reading_passage', 'answer_sheet', 'answer_key', 'instructions')",
+            name="ck_mock_test_files_role",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    mock_test_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("mock_tests.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    file_type: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="pdf"
+    )
+    material_role: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="question_paper"
+    )
+    title: Mapped[str] = mapped_column(
+        String(255), nullable=False, default="Mock Test Material"
+    )
+    telegram_file_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    file_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    mime_type: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    text_content: Mapped[str | None] = mapped_column(Text, nullable=True)
+    position: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    mock_test: Mapped["MockTest"] = relationship(
+        "MockTest", back_populates="files"
+    )
+
+
+class MockTestAccess(Base):
+    __tablename__ = "mock_test_access"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id", "mock_test_id", name="uq_mock_test_access_user_test"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    mock_test_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("mock_tests.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    granted_by: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    access_type: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="admin_grant"
+    )
+    access_reason: Mapped[str] = mapped_column(
+        String(255),
+        nullable=False,
+        default="Complimentary educational access",
+    )
+    duration_label: Mapped[str] = mapped_column(
+        String(64), nullable=False, default="Permanent"
+    )
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, index=True
+    )
+    granted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    revoked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    revoked_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+
+
+class MockTestAdminLog(Base):
+    __tablename__ = "mock_test_admin_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    admin_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    target_user_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    mock_test_id: Mapped[int | None] = mapped_column(
+        Integer, nullable=True, index=True
+    )
+    action: Mapped[str] = mapped_column(String(64), nullable=False)
+    details: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )

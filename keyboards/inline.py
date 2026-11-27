@@ -313,6 +313,12 @@ def get_admin_panel_keyboard(
         ],
         [
             InlineKeyboardButton(
+                "📝 MOCK TEST BOSHQARUVI",
+                callback_data="adm_mock:home",
+            )
+        ],
+        [
+            InlineKeyboardButton(
                 "📢 Barcha foydalanuvchilarga xabar",
                 callback_data="admin:broadcast",
             )

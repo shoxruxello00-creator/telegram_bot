@@ -221,6 +221,38 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
         message={t(lang, 'voxy_welcome')}
       />
 
+      {/* Public IELTS Mock Test Marketplace Banner (Visible to ALL Users) */}
+      <motion.button
+        type="button"
+        whileHover={{ scale: 1.01 }}
+        whileTap={{ scale: 0.99 }}
+        onClick={() => {
+          hapticImpact('medium');
+          useAppStore.getState().openMockTests();
+        }}
+        className="w-full text-left relative overflow-hidden rounded-3xl bg-gradient-to-r from-sky-500/20 via-indigo-600/25 to-violet-600/20 border border-voxy-blue/45 p-4 shadow-blueGlow flex items-center justify-between gap-3"
+      >
+        <div className="min-w-0">
+          <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-extrabold uppercase tracking-wide bg-voxy-blue/20 text-voxy-blue border border-voxy-blue/40">
+            <span>📝 IELTS MOCK TEST</span>
+            <span>• 4 SKILLS + FULL EXAM</span>
+          </div>
+          <h3 className="text-sm sm:text-base font-display font-bold text-voxy-text mt-1.5">
+            {lang === 'ru'
+              ? '📝 IELTS Mock Test и Мои Тесты'
+              : lang === 'en'
+              ? '📝 IELTS Mock Tests & My Tests'
+              : '📝 IELTS Mock Test va Mening Testlarim'}
+          </h3>
+          <p className="text-[11px] text-voxy-muted mt-0.5">
+            Reading • Listening • Writing • Speaking • @n0omg
+          </p>
+        </div>
+        <div className="w-10 h-10 rounded-2xl bg-voxy-blue text-slate-950 flex items-center justify-center shrink-0 shadow">
+          <ChevronRight className="w-5 h-5" />
+        </div>
+      </motion.button>
+
       {/* Admin-Only Permanent Vocabulary Library & Memorization Card */}
       {user.is_admin && (
         <motion.button

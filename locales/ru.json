@@ -91,5 +91,15 @@
   "admin_fc_next": "KEYINGI SO‘Z",
   "admin_fc_prev": "OLDINGI SO‘Z",
   "admin_fc_flip_back": "🔄 Показать ответ и пример",
-  "admin_fc_flip_front": "🔄 Повернуть карточку"
+  "admin_fc_flip_front": "🔄 Повернуть карточку",
+  "menu_mock_test": "📝 MOCK TEST",
+  "mock_btn_my_tests": "🔓 МОИ ТЕСТЫ",
+  "mock_btn_contact_admin": "💬 СВЯЗАТЬСЯ С АДМИНОМ",
+  "mock_btn_write_admin": "💬 НАПИСАТЬ АДМИНУ",
+  "mock_btn_back": "🔙 НАЗАД",
+  "mock_btn_start_test": "🚀 Начать тест",
+  "mock_btn_download_materials": "📥 Открыть / скачать материалы",
+  "mock_support_message": "Для получения подробной информации о Mock Test свяжитесь с админом: @n0omg",
+  "mock_grant_notification": "🎉 Поздравляем! Вам предоставлен доступ к новому IELTS Mock Test. Вы можете открыть его в разделе MOCK TEST → МОИ ТЕСТЫ.",
+  "admin_mock_menu": "📝 УПРАВЛЕНИЕ MOCK TEST"
 }

@@ -1,6 +1,7 @@
 import {
   AdminArchiveItem,
   AdminLibraryResponse,
+  AdminMockTestsResponse,
   AdminQuizQuestion,
   AdminQuizSubmitResponse,
   BootstrapPayload,
@@ -8,6 +9,8 @@ import {
   GameSessionPayload,
   LanguageCode,
   LeaderboardPayload,
+  MockTestItem,
+  MockTestsCatalogResponse,
   ReferralsPayload,
 } from '../types/miniapp';
 import { getTelegramInitData, getTelegramUser } from './telegram';
@@ -322,4 +325,83 @@ export async function downloadAdminExport(params: {
   link.click();
   link.remove();
   setTimeout(() => URL.revokeObjectURL(url), 3000);
+}
+
+export async function fetchMockTestsCatalog(): Promise<MockTestsCatalogResponse> {
+  const res = await fetch('/api/miniapp/mock-tests', {
+    method: 'GET',
+    headers: buildHeaders(),
+  });
+  if (!res.ok) {
+    throw new Error('Failed to load Mock Tests catalog');
+  }
+  return res.json();
+}
+
+export async function fetchMockTestMaterials(testId: number): Promise<{
+  ok: boolean;
+  test: MockTestItem;
+}> {
+  const res = await fetch(
+    `/api/miniapp/mock-tests/materials?test_id=${encodeURIComponent(String(testId))}`,
+    {
+      method: 'GET',
+      headers: buildHeaders(),
+    }
+  );
+  if (!res.ok) {
+    throw new Error('Locked: Contact @n0omg to unlock this Mock Test');
+  }
+  return res.json();
+}
+
+export async function fetchAdminMockTests(
+  searchQuery = ''
+): Promise<AdminMockTestsResponse> {
+  const qs = searchQuery ? `?q=${encodeURIComponent(searchQuery)}` : '';
+  const res = await fetch(`/api/miniapp/admin/mock-tests${qs}`, {
+    method: 'GET',
+    headers: buildHeaders(),
+  });
+  if (!res.ok) {
+    throw new Error('Admin authorization required');
+  }
+  return res.json();
+}
+
+export async function saveAdminMockTest(
+  payload: Record<string, unknown>
+): Promise<{ ok: boolean; test?: MockTestItem }> {
+  const res = await fetch('/api/miniapp/admin/mock-tests/save', {
+    method: 'POST',
+    headers: buildHeaders(),
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    throw new Error('Failed to save Mock Test');
+  }
+  return res.json();
+}
+
+export async function manageAdminMockTestAccess(payload: {
+  action: 'grant' | 'revoke';
+  test_id: number;
+  target_user_id: number;
+  duration_code?: string;
+  reason?: string;
+}): Promise<{
+  ok: boolean;
+  reason?: string;
+  test_title?: string;
+  duration_label?: string;
+}> {
+  const res = await fetch('/api/miniapp/admin/mock-tests/access', {
+    method: 'POST',
+    headers: buildHeaders(),
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    throw new Error('Failed to update Mock Test access');
+  }
+  return res.json();
 }

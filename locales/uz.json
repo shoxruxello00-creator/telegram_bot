@@ -91,5 +91,15 @@
   "admin_fc_next": "KEYINGI SO‘Z",
   "admin_fc_prev": "OLDINGI SO‘Z",
   "admin_fc_flip_back": "🔄 Javob va misolni ko‘rish",
-  "admin_fc_flip_front": "🔄 Old tomonga qaytarish"
+  "admin_fc_flip_front": "🔄 Old tomonga qaytarish",
+  "menu_mock_test": "📝 MOCK TEST",
+  "mock_btn_my_tests": "🔓 MENING TESTLARIM",
+  "mock_btn_contact_admin": "💬 ADMIN BILAN BOG‘LANISH",
+  "mock_btn_write_admin": "💬 ADMINGA YOZISH",
+  "mock_btn_back": "🔙 ORQAGA",
+  "mock_btn_start_test": "🚀 Testni boshlash",
+  "mock_btn_download_materials": "📥 Materiallarni ochish / yuklab olish",
+  "mock_support_message": "Mock Test haqida batafsil ma’lumot olish uchun admin bilan bog‘laning: @n0omg",
+  "mock_grant_notification": "🎉 Tabriklaymiz! Sizga yangi IELTS Mock Test taqdim etildi. Testni MOCK TEST → MENING TESTLARIM bo‘limidan ochishingiz mumkin.",
+  "admin_mock_menu": "📝 MOCK TEST BOSHQARUVI"
 }

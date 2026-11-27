@@ -1723,6 +1723,257 @@ def handle_admin_export(
 
 
 # ==============================================================================
+# IELTS MOCK TEST MARKETPLACE & ADMIN MANAGEMENT REST HANDLERS
+# ==============================================================================
+
+
+def build_mock_tests_catalog_payload(user_id: int) -> dict[str, Any]:
+    from services.mock_test_service import (
+        ADMIN_SUPPORT_URL,
+        ADMIN_SUPPORT_USERNAME,
+        MOCK_TEST_CATEGORIES,
+        mock_test_manager,
+    )
+
+    async def _pg_fetch() -> list[dict[str, Any]]:
+        from database.db import get_session
+
+        async with get_session() as session:
+            return await mock_test_manager.list_public_mock_tests_pg(
+                session, user_id
+            )
+
+    tests = _run_on_main_loop(_pg_fetch())
+    if tests is None:
+        tests = mock_test_manager.list_public_mock_tests_local(user_id)
+
+    my_tests = [t for t in tests if t.get("is_unlocked")]
+    return {
+        "ok": True,
+        "categories": list(MOCK_TEST_CATEGORIES),
+        "tests": tests,
+        "my_tests": my_tests,
+        "support_username": ADMIN_SUPPORT_USERNAME,
+        "support_url": ADMIN_SUPPORT_URL,
+    }
+
+
+def build_mock_test_materials_payload(
+    user_id: int, query: dict[str, str]
+) -> tuple[int, dict[str, Any]]:
+    from services.mock_test_service import mock_test_manager
+
+    raw_tid = query.get("test_id", "0").strip()
+    test_id = int(raw_tid) if raw_tid.isdigit() else 0
+    if test_id <= 0:
+        return 400, {"ok": False, "error": "Invalid test_id"}
+
+    is_admin = resolve_admin_role(user_id) is not None
+
+    async def _pg_mat() -> tuple[bool, str, dict[str, Any] | None]:
+        from database.db import get_session
+
+        async with get_session() as session:
+            return await mock_test_manager.get_protected_materials_pg(
+                session, user_id, test_id, is_admin=is_admin
+            )
+
+    res = _run_on_main_loop(_pg_mat())
+    if res is None:
+        res = mock_test_manager.get_protected_materials_local(
+            user_id, test_id, is_admin=is_admin
+        )
+
+    ok, reason, test_data = res
+    if not ok or test_data is None:
+        status_code = 404 if reason == "NOT_FOUND" else 403
+        return status_code, {
+            "ok": False,
+            "error": "Forbidden: You do not have active access to this Mock Test.",
+            "reason": reason,
+        }
+    return 200, {"ok": True, "test": test_data}
+
+
+def build_admin_mock_tests_payload(
+    user_id: int, query: dict[str, str]
+) -> tuple[int, dict[str, Any]]:
+    role = resolve_admin_role(user_id)
+    if role is None:
+        return 403, {"ok": False, "error": "Forbidden: Admin access required"}
+
+    from services.mock_test_service import mock_test_manager
+
+    q_str = query.get("q", "").strip()
+
+    async def _pg_adm() -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+        from database.db import get_session
+
+        async with get_session() as session:
+            all_t = await mock_test_manager.list_all_mock_tests_admin_pg(session)
+            holders = await mock_test_manager.list_access_holders_pg(session)
+            users, _, _ = await mock_test_manager.search_registered_users_pg(
+                session, query_str=q_str, page=1, page_size=25
+            )
+            return all_t, holders, users
+
+    pg_res = _run_on_main_loop(_pg_adm())
+    if pg_res is not None:
+        all_t, holders, users = pg_res
+    else:
+        all_t = mock_test_manager.list_all_mock_tests_admin_local()
+        holders = mock_test_manager.list_access_holders_local()
+        users, _, _ = mock_test_manager.search_registered_users_local(
+            query_str=q_str, page=1, page_size=25
+        )
+
+    return 200, {
+        "ok": True,
+        "admin_role": role,
+        "tests": all_t,
+        "holders": holders,
+        "users": users,
+    }
+
+
+def handle_admin_mock_test_save(
+    user_id: int, payload: dict[str, Any]
+) -> tuple[int, dict[str, Any]]:
+    role = resolve_admin_role(user_id)
+    if role is None:
+        return 403, {"ok": False, "error": "Forbidden: Admin access required"}
+
+    from services.mock_test_service import mock_test_manager
+
+    action = str(payload.get("action", "create")).strip().lower()
+    test_id = int(payload.get("test_id", 0) or 0)
+
+    if action == "create":
+        async def _pg_create() -> dict[str, Any]:
+            from database.db import get_session
+
+            async with get_session() as session:
+                return await mock_test_manager.create_mock_test_pg(
+                    session, user_id, payload
+                )
+
+        created = _run_on_main_loop(_pg_create())
+        if created is None:
+            created = mock_test_manager.create_mock_test_local(user_id, payload)
+        return 200, {"ok": True, "test": created}
+
+    if action == "update" and test_id > 0:
+        async def _pg_upd() -> dict[str, Any] | None:
+            from database.db import get_session
+
+            async with get_session() as session:
+                return await mock_test_manager.update_mock_test_pg(
+                    session, user_id, test_id, payload
+                )
+
+        updated = _run_on_main_loop(_pg_upd())
+        if updated is None:
+            updated = mock_test_manager.update_mock_test_local(
+                user_id, test_id, payload
+            )
+        if updated is None:
+            return 404, {"ok": False, "error": "Mock test not found"}
+        return 200, {"ok": True, "test": updated}
+
+    if action == "add_material" and test_id > 0:
+        material = payload.get("material", {}) or {}
+
+        async def _pg_mat() -> dict[str, Any] | None:
+            from database.db import get_session
+
+            async with get_session() as session:
+                return await mock_test_manager.add_material_to_test_pg(
+                    session, user_id, test_id, material
+                )
+
+        updated_t = _run_on_main_loop(_pg_mat())
+        if updated_t is None:
+            updated_t = mock_test_manager.add_material_to_test_local(
+                user_id, test_id, material
+            )
+        if updated_t is None:
+            return 404, {"ok": False, "error": "Mock test not found"}
+        return 200, {"ok": True, "test": updated_t}
+
+    if action == "delete" and test_id > 0:
+        async def _pg_del() -> bool:
+            from database.db import get_session
+
+            async with get_session() as session:
+                return await mock_test_manager.delete_mock_test_pg(
+                    session, user_id, test_id
+                )
+
+        deleted = _run_on_main_loop(_pg_del())
+        if deleted is None:
+            deleted = mock_test_manager.delete_mock_test_local(user_id, test_id)
+        return 200, {"ok": bool(deleted), "deleted_id": test_id}
+
+    return 400, {"ok": False, "error": "Invalid action or test_id"}
+
+
+def handle_admin_mock_test_access(
+    user_id: int, payload: dict[str, Any]
+) -> tuple[int, dict[str, Any]]:
+    role = resolve_admin_role(user_id)
+    if role is None:
+        return 403, {"ok": False, "error": "Forbidden: Admin access required"}
+
+    from services.mock_test_service import mock_test_manager
+
+    action = str(payload.get("action", "grant")).strip().lower()
+    test_id = int(payload.get("test_id", 0) or 0)
+    target_uid = int(payload.get("target_user_id", 0) or 0)
+    duration_code = str(payload.get("duration_code", "permanent") or "permanent")
+    reason = str(
+        payload.get("reason", "Complimentary educational access")
+        or "Complimentary educational access"
+    )
+
+    if test_id <= 0 or target_uid <= 0:
+        return 400, {"ok": False, "error": "test_id and target_user_id are required"}
+
+    if action == "grant":
+        async def _pg_grant() -> dict[str, Any]:
+            from database.db import get_session
+
+            async with get_session() as session:
+                return await mock_test_manager.grant_access_pg(
+                    session, user_id, target_uid, test_id, duration_code, reason
+                )
+
+        res = _run_on_main_loop(_pg_grant())
+        if res is None:
+            res = mock_test_manager.grant_access_local(
+                user_id, target_uid, test_id, duration_code, reason
+            )
+        return 200, res
+
+    if action == "revoke":
+        async def _pg_rev() -> dict[str, Any]:
+            from database.db import get_session
+
+            async with get_session() as session:
+                return await mock_test_manager.revoke_access_pg(
+                    session, user_id, target_uid, test_id
+                )
+
+        res = _run_on_main_loop(_pg_rev())
+        if res is None:
+            res = mock_test_manager.revoke_access_local(
+                user_id, target_uid, test_id
+            )
+        return 200, res
+
+    return 400, {"ok": False, "error": "Unsupported access action"}
+
+
+# ==============================================================================
 # HTTP REQUEST HANDLER FOR MINI APP API + SPA STATIC FILES
 # ==============================================================================
 
@@ -1834,6 +2085,25 @@ class MiniAppHTTPRequestHandler(BaseHTTPRequestHandler):
             self._send_json(200, build_referrals_payload(uid))
             return
 
+        if path == "/api/miniapp/mock-tests":
+            uid, _, _ = self._extract_authenticated_user(query)
+            self._send_json(200, build_mock_tests_catalog_payload(uid))
+            return
+
+        if path == "/api/miniapp/mock-tests/materials":
+            uid, _, _ = self._extract_authenticated_user(query)
+            code, resp = build_mock_test_materials_payload(uid, query)
+            self._send_json(code, resp)
+            return
+
+        if path == "/api/miniapp/admin/mock-tests":
+            uid, _, _ = self._extract_authenticated_user(
+                query, strict_admin_route=True
+            )
+            code, resp = build_admin_mock_tests_payload(uid, query)
+            self._send_json(code, resp)
+            return
+
         if path == "/api/miniapp/admin/library":
             uid, _, _ = self._extract_authenticated_user(
                 query, strict_admin_route=True
@@ -1925,6 +2195,22 @@ class MiniAppHTTPRequestHandler(BaseHTTPRequestHandler):
                 strict_admin_route=True
             )
             code, resp = handle_admin_quiz_submit(admin_uid, payload)
+            self._send_json(code, resp)
+            return
+
+        if path == "/api/miniapp/admin/mock-tests/save":
+            admin_uid, _, _ = self._extract_authenticated_user(
+                strict_admin_route=True
+            )
+            code, resp = handle_admin_mock_test_save(admin_uid, payload)
+            self._send_json(code, resp)
+            return
+
+        if path == "/api/miniapp/admin/mock-tests/access":
+            admin_uid, _, _ = self._extract_authenticated_user(
+                strict_admin_route=True
+            )
+            code, resp = handle_admin_mock_test_access(admin_uid, payload)
             self._send_json(code, resp)
             return
 

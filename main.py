@@ -29,6 +29,12 @@ from handlers.admin_library import (
     handle_admin_library_text_input,
 )
 from handlers.lesson import lesson_callback_handler, show_daily_lesson
+from handlers.mock_test import (
+    admin_mock_callback_handler,
+    handle_admin_mock_input,
+    mock_user_callback_handler,
+    show_mock_test_catalog,
+)
 from handlers.quiz import (
     poll_answer_handler,
     quiz_callback_handler,
@@ -49,6 +55,7 @@ from services.broadcast_service import resume_incomplete_broadcasts
 from services.i18n import i18n
 from services.lesson_service import ensure_daily_lesson, notify_admins
 from services.miniapp_api import MiniAppHTTPRequestHandler, set_main_event_loop
+from services.mock_test_service import mock_test_manager
 from services.scheduler_service import setup_scheduled_jobs
 
 logging.basicConfig(
@@ -138,6 +145,7 @@ async def post_init(application: Application) -> None:
             bot=application.bot,
         )
         await sync_permanent_vocabulary_archive_pg(session)
+        await mock_test_manager.ensure_seed_mock_tests_pg(session)
         logger.info(
             "Startup check: Today's lesson (%s) has %d unique C1–C2 expressions ready.",
             settings.today(),
@@ -186,6 +194,8 @@ async def incoming_message_router(
         return
     if await handle_admin_library_text_input(update, context):
         return
+    if await handle_admin_mock_input(update, context):
+        return
 
     if not update.message or not update.message.text:
         return
@@ -196,6 +206,8 @@ async def incoming_message_router(
         await show_daily_lesson(update, context)
     elif text in i18n.all_values_for_key("menu_start_quiz"):
         await start_quiz_command_or_menu(update, context)
+    elif text in i18n.all_values_for_key("menu_mock_test") or text == "📝 MOCK TEST":
+        await show_mock_test_catalog(update, context)
     elif text in i18n.all_values_for_key("menu_referral"):
         await show_referral_menu(update, context)
     elif text in i18n.all_values_for_key("menu_statistics"):
@@ -239,6 +251,7 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("lesson", show_daily_lesson))
     application.add_handler(CommandHandler("quiz", start_quiz_command_or_menu))
+    application.add_handler(CommandHandler("mock", show_mock_test_catalog))
     application.add_handler(CommandHandler("referral", show_referral_menu))
     application.add_handler(CommandHandler("stats", show_statistics))
     application.add_handler(CommandHandler("leaderboard", show_leaderboard))
@@ -257,6 +270,9 @@ def build_application() -> Application:
         CallbackQueryHandler(quiz_callback_handler, pattern=r"^quiz:")
     )
     application.add_handler(
+        CallbackQueryHandler(mock_user_callback_handler, pattern=r"^mock:")
+    )
+    application.add_handler(
         CallbackQueryHandler(referral_callback_handler, pattern=r"^referral:")
     )
     application.add_handler(
@@ -270,6 +286,9 @@ def build_application() -> Application:
     )
     application.add_handler(
         CallbackQueryHandler(admin_library_callback_handler, pattern=r"^adm_lib:")
+    )
+    application.add_handler(
+        CallbackQueryHandler(admin_mock_callback_handler, pattern=r"^adm_mock:")
     )
 
     # Native Telegram Quiz Poll Answer Handler

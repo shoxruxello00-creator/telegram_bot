@@ -47,6 +47,11 @@ const AdminLibraryModal = lazy(() =>
     default: m.AdminLibraryModal,
   }))
 );
+const MockTestsModal = lazy(() =>
+  import('./components/MockTestsModal').then((m) => ({
+    default: m.MockTestsModal,
+  }))
+);
 
 export const App: React.FC = () => {
   const queryClient = useQueryClient();
@@ -57,6 +62,7 @@ export const App: React.FC = () => {
     closeModal,
     setActiveTab,
     openAdminLibrary,
+    openMockTests,
   } = useAppStore();
 
   useEffect(() => {
@@ -82,15 +88,23 @@ export const App: React.FC = () => {
     if (data?.user?.language_code) {
       setLang(data.user.language_code);
     }
-    if (
-      data?.user?.is_admin &&
-      typeof window !== 'undefined' &&
-      new URLSearchParams(window.location.search).get('admin_lib') === '1'
-    ) {
-      openAdminLibrary();
-      window.history.replaceState({}, '', window.location.pathname);
+    if (typeof window !== 'undefined') {
+      const qs = new URLSearchParams(window.location.search);
+      if (data?.user?.is_admin && qs.get('admin_lib') === '1') {
+        openAdminLibrary();
+        window.history.replaceState({}, '', window.location.pathname);
+      } else if (qs.get('mock_tests') === '1') {
+        openMockTests();
+        window.history.replaceState({}, '', window.location.pathname);
+      }
     }
-  }, [data?.user?.language_code, data?.user?.is_admin, setLang, openAdminLibrary]);
+  }, [
+    data?.user?.language_code,
+    data?.user?.is_admin,
+    setLang,
+    openAdminLibrary,
+    openMockTests,
+  ]);
 
   const handleLanguageChange = async (newLang: LanguageCode) => {
     setLang(newLang);
@@ -192,6 +206,9 @@ export const App: React.FC = () => {
         {activeModal === 'referrals' && <ReferralsModal />}
         {activeModal === 'admin_library' && data.user.is_admin && (
           <AdminLibraryModal />
+        )}
+        {activeModal === 'mock_tests' && (
+          <MockTestsModal isAdmin={Boolean(data.user.is_admin)} />
         )}
       </Suspense>
     </div>
