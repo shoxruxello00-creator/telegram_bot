@@ -41,6 +41,7 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
     openQuiz,
     openGameMode,
     openReferrals,
+    openAdminLibrary,
     setActiveTab,
   } = useAppStore();
 
@@ -219,6 +220,36 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
         size="md"
         message={t(lang, 'voxy_welcome')}
       />
+
+      {/* Admin-Only Permanent Vocabulary Library & Memorization Card */}
+      {user.is_admin && (
+        <motion.button
+          type="button"
+          whileHover={{ scale: 1.01 }}
+          whileTap={{ scale: 0.99 }}
+          onClick={() => {
+            hapticImpact('medium');
+            openAdminLibrary();
+          }}
+          className="w-full text-left relative overflow-hidden rounded-3xl bg-gradient-to-r from-amber-500/20 via-voxy-purple/25 to-voxy-blue/20 border border-voxy-gold/45 p-4 shadow-goldGlow flex items-center justify-between gap-3"
+        >
+          <div className="min-w-0">
+            <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-extrabold uppercase tracking-wide bg-voxy-gold/20 text-voxy-gold border border-voxy-gold/40">
+              <span>👑 ADMIN DASHBOARD</span>
+              {user.admin_role && <span>• {user.admin_role.toUpperCase()}</span>}
+            </div>
+            <h3 className="text-sm sm:text-base font-display font-bold text-voxy-text mt-1.5">
+              {t(lang, 'admin_lib_btn')}
+            </h3>
+            <p className="text-[11px] text-voxy-muted mt-0.5">
+              {t(lang, 'admin_lib_sub')}
+            </p>
+          </div>
+          <div className="w-10 h-10 rounded-2xl bg-voxy-gold text-slate-950 flex items-center justify-center shrink-0 shadow">
+            <ChevronRight className="w-5 h-5" />
+          </div>
+        </motion.button>
+      )}
 
       {/* Daily IELTS 4+2+2+2 Vocabulary Mission Hero Card */}
       <motion.div

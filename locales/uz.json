@@ -75,5 +75,21 @@
   "pack_locked_alert": "🔒 Ushbu mukofotni ochish uchun {required} ta tasdiqlangan referral kerak (Sizda: {confirmed} ta).",
   "pack_header": "🎁 <b>{pack_title}</b> — <b>{index}/{total}</b>\n📊 O‘zlashtirildi: <b>{completed_words}/{total} so‘z</b> | 🧠 Quizlar: <b>{completed_quizzes} marta</b>\n━━━━━━━━━━━━━━━━━━━━",
   "btn_pack_quiz": "🧠 Maxsus Pack Quizni boshlash",
-  "btn_back_to_rewards": "🔙 Mukofotlar ro‘yxatiga"
+  "btn_back_to_rewards": "🔙 Mukofotlar ro‘yxatiga",
+  "admin_lib_menu": "📚 Barcha so‘zlarni yodlash",
+  "admin_lib_sub_all": "📚 Barcha so‘zlar",
+  "admin_lib_sub_memorize": "🧠 So‘zlarni yodlash",
+  "admin_lib_sub_quiz": "📝 Barcha so‘zlardan test",
+  "admin_lib_sub_search": "🔍 So‘zlarni qidirish",
+  "admin_lib_sub_date": "📅 Sana bo‘yicha so‘zlar",
+  "admin_lib_sub_revision": "🔄 Takrorlash",
+  "admin_lib_sub_stats": "📊 Yodlash statistikasi",
+  "admin_lib_sub_export": "📥 Eksport qilish",
+  "admin_fc_memorized": "YODLADIM",
+  "admin_fc_difficult": "QIYIN",
+  "admin_fc_later": "KEYINROQ",
+  "admin_fc_next": "KEYINGI SO‘Z",
+  "admin_fc_prev": "OLDINGI SO‘Z",
+  "admin_fc_flip_back": "🔄 Javob va misolni ko‘rish",
+  "admin_fc_flip_front": "🔄 Old tomonga qaytarish"
 }

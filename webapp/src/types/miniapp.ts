@@ -48,6 +48,8 @@ export interface UserProfile {
   reminders_enabled: boolean;
   broadcast_enabled: boolean;
   daily_goal: number;
+  is_admin?: boolean;
+  admin_role?: string | null;
   badge: string;
   level: number;
   level_title: string;
@@ -272,4 +274,160 @@ export interface GameSessionPayload {
     accuracy_rate: number;
   } | null;
   items: VocabularyItem[];
+}
+
+export type AdminFilterMode =
+  | 'all'
+  | 'unmemorized'
+  | 'memorized'
+  | 'difficult'
+  | 'incorrect'
+  | 'today'
+  | 'last_7d'
+  | 'last_30d'
+  | 'srs_due';
+
+export interface AdminArchiveItem {
+  id: number;
+  normalized_expression: string;
+  basic_expression: string;
+  advanced_expression: string;
+  translation_uz: string;
+  translation_ru: string;
+  definition_en: string;
+  basic_example_en: string;
+  example_en: string;
+  example_uz: string;
+  example_ru: string;
+  usage_context: string;
+  cefr_level: string;
+  category: string;
+  original_generation_date: string;
+  origin_type: string;
+  options: string[];
+  correct_option: number;
+  admin_status: 'unmemorized' | 'memorized' | 'difficult' | 'later';
+  srs_stage: number;
+  interval_days: number;
+  next_review_at?: string | null;
+  review_count: number;
+  correct_count: number;
+  wrong_count: number;
+  last_quiz_wrong: boolean;
+  is_revision_due: boolean;
+}
+
+export interface AdminStats {
+  total_archived: number;
+  added_today: number;
+  added_this_week: number;
+  added_this_month: number;
+  memorized_count: number;
+  unmemorized_count: number;
+  difficult_count: number;
+  incorrect_count: number;
+  revision_due_count: number;
+  quiz_accuracy: number;
+  total_quizzes_taken: number;
+  completion_percentage: number;
+  categories: Record<string, number>;
+  dates: Record<string, number>;
+  origins: Record<string, number>;
+}
+
+export interface AdminSavedSession {
+  mode: string;
+  archive_ids: number[];
+  current_index: number;
+  total: number;
+  updated_at?: string;
+  items?: AdminArchiveItem[];
+}
+
+export interface AdminAiMonitoring {
+  date: string;
+  billing_policy: string;
+  paid_apis_blocked: boolean;
+  active_model: string;
+  ai_temporarily_disabled: boolean;
+  ai_disabled_reason?: string | null;
+  total_requests_today: number;
+  successful_requests_today: number;
+  total_tokens_today: number;
+  active_model_quota: {
+    rpd_used: number;
+    rpd_limit: number;
+    rpd_remaining: number;
+    rpm_used: number;
+    rpm_limit: number;
+    rpm_remaining: number;
+    tpm_used: number;
+    tpm_limit: number;
+    tpm_remaining: number;
+  };
+  combined_free_rpd_remaining: number;
+  combined_free_rpd_limit: number;
+  errors: {
+    errors_404: number;
+    errors_429: number;
+    errors_validation: number;
+    errors_other: number;
+    last_error?: string | null;
+  };
+  reserve: {
+    unused_count: number;
+    target_min: number;
+    target_max: number;
+    fallbacks_today: number;
+    healthy: boolean;
+  };
+}
+
+export interface AdminLibraryResponse {
+  ok: boolean;
+  admin_role: string;
+  items: AdminArchiveItem[];
+  total_filtered: number;
+  page: number;
+  page_size: number;
+  total_pages: number;
+  stats: AdminStats;
+  saved_session: AdminSavedSession | null;
+  ai_monitoring?: AdminAiMonitoring;
+}
+
+export interface AdminQuizQuestion {
+  archive_id: number;
+  basic_expression: string;
+  advanced_expression: string;
+  translation_uz: string;
+  translation_ru: string;
+  definition_en: string;
+  basic_example_en: string;
+  example_en: string;
+  usage_context: string;
+  cefr_level: string;
+  category: string;
+  original_generation_date: string;
+  options: string[];
+  correct_option: number;
+}
+
+export interface AdminQuizSubmitResponse {
+  ok: boolean;
+  question_count: number;
+  correct_count: number;
+  accuracy: number;
+  wrong_archive_ids: number[];
+  details: Array<{
+    archive_id: number;
+    basic_expression: string;
+    advanced_expression: string;
+    selected_text: string;
+    is_correct: boolean;
+    translation_uz: string;
+    translation_ru: string;
+    definition_en: string;
+    example_en: string;
+  }>;
 }

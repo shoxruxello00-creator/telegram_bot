@@ -75,5 +75,21 @@
   "pack_locked_alert": "🔒 You need {required} confirmed referrals to unlock this reward (You have: {confirmed}).",
   "pack_header": "🎁 <b>{pack_title}</b> — <b>{index}/{total}</b>\n📊 Studied: <b>{completed_words}/{total} words</b> | 🧠 Quizzes: <b>{completed_quizzes}</b>\n━━━━━━━━━━━━━━━━━━━━",
   "btn_pack_quiz": "🧠 Start Special Pack Quiz",
-  "btn_back_to_rewards": "🔙 Back to Rewards"
+  "btn_back_to_rewards": "🔙 Back to Rewards",
+  "admin_lib_menu": "📚 Memorize All Vocabulary",
+  "admin_lib_sub_all": "📚 All Vocabulary",
+  "admin_lib_sub_memorize": "🧠 Memorize Vocabulary",
+  "admin_lib_sub_quiz": "📝 All Vocabulary Quiz",
+  "admin_lib_sub_search": "🔍 Search Vocabulary",
+  "admin_lib_sub_date": "📅 Vocabulary by Date",
+  "admin_lib_sub_revision": "🔄 Smart Revision",
+  "admin_lib_sub_stats": "📊 Memorization Stats",
+  "admin_lib_sub_export": "📥 Export Vocabulary",
+  "admin_fc_memorized": "YODLADIM",
+  "admin_fc_difficult": "QIYIN",
+  "admin_fc_later": "KEYINROQ",
+  "admin_fc_next": "KEYINGI SO‘Z",
+  "admin_fc_prev": "OLDINGI SO‘Z",
+  "admin_fc_flip_back": "🔄 Reveal Answer & Example",
+  "admin_fc_flip_front": "🔄 Flip Back to Front"
 }

@@ -24,6 +24,10 @@ from handlers.admin import (
     admin_command,
     handle_admin_input_message,
 )
+from handlers.admin_library import (
+    admin_library_callback_handler,
+    handle_admin_library_text_input,
+)
 from handlers.lesson import lesson_callback_handler, show_daily_lesson
 from handlers.quiz import (
     poll_answer_handler,
@@ -39,6 +43,7 @@ from handlers.stats import (
     show_learned_words,
     show_statistics,
 )
+from services.admin_library_service import sync_permanent_vocabulary_archive_pg
 from services.bonus_pack_service import ensure_bonus_packs_seeded
 from services.broadcast_service import resume_incomplete_broadcasts
 from services.i18n import i18n
@@ -132,6 +137,7 @@ async def post_init(application: Application) -> None:
             target_date=settings.today(),
             bot=application.bot,
         )
+        await sync_permanent_vocabulary_archive_pg(session)
         logger.info(
             "Startup check: Today's lesson (%s) has %d unique C1–C2 expressions ready.",
             settings.today(),
@@ -177,6 +183,8 @@ async def incoming_message_router(
     2. Otherwise route multilingual ReplyKeyboard menu buttons across uz, ru, en.
     """
     if await handle_admin_input_message(update, context):
+        return
+    if await handle_admin_library_text_input(update, context):
         return
 
     if not update.message or not update.message.text:
@@ -259,6 +267,9 @@ def build_application() -> Application:
     )
     application.add_handler(
         CallbackQueryHandler(admin_callback_handler, pattern=r"^admin:")
+    )
+    application.add_handler(
+        CallbackQueryHandler(admin_library_callback_handler, pattern=r"^adm_lib:")
     )
 
     # Native Telegram Quiz Poll Answer Handler

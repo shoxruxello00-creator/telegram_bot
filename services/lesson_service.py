@@ -50,6 +50,7 @@ async def ensure_daily_lesson(
         session=session,
         target_date=lesson_date,
         word_count=settings.DAILY_WORD_COUNT,
+        bot=bot,
     )
 
     if not gen_result.success:

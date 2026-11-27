@@ -301,8 +301,16 @@ def get_bonus_pack_card_keyboard(
 # ==============================================================================
 
 
-def get_admin_panel_keyboard(is_super_admin: bool = True) -> InlineKeyboardMarkup:
+def get_admin_panel_keyboard(
+    is_super_admin: bool = True, lang: str = "uz"
+) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = [
+        [
+            InlineKeyboardButton(
+                i18n.t("admin_lib_menu", lang=lang),
+                callback_data="adm_lib:home",
+            )
+        ],
         [
             InlineKeyboardButton(
                 "📢 Barcha foydalanuvchilarga xabar",

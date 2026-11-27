@@ -158,6 +158,20 @@ export const ProfileAnalyticsPage: React.FC<ProfileAnalyticsPageProps> = ({
             <div className="text-[10px] text-voxy-muted">Quizzes</div>
           </div>
         </div>
+
+        {user.is_admin && (
+          <button
+            type="button"
+            onClick={() => {
+              hapticImpact('medium');
+              useAppStore.getState().openAdminLibrary();
+            }}
+            className="mt-3.5 w-full py-3 px-4 rounded-2xl bg-gradient-to-r from-amber-500/20 via-voxy-purple/25 to-voxy-blue/20 border border-voxy-gold/45 text-xs font-extrabold text-voxy-gold flex items-center justify-between"
+          >
+            <span>👑 {t(lang, 'admin_lib_btn')}</span>
+            <span>Open →</span>
+          </button>
+        )}
       </div>
 
       {/* Vocabulary Category Mastery (4+2+2+2 Breakdown) */}

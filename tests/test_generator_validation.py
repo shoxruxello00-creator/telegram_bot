@@ -12,7 +12,7 @@ from services.ai_vocabulary_generator import (
 def test_reserve_vocabulary_schema_uniqueness_and_no_very_spam() -> None:
     assert RESERVE_FILE_PATH.exists()
     raw_items = json.loads(RESERVE_FILE_PATH.read_text(encoding="utf-8"))
-    assert len(raw_items) == 40
+    assert 100 <= len(raw_items) <= 300
 
     seen_normalized: set[str] = set()
     very_count = 0

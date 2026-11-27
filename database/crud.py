@@ -23,6 +23,7 @@ from database.models import (
     UserLearnedWord,
     UserSettings,
     Vocabulary,
+    VocabularyReserve,
 )
 
 DEFAULT_MILESTONES: list[tuple[int, str, str]] = [
@@ -336,8 +337,161 @@ async def save_generated_daily_lesson(
         )
         session.add(lesson_item)
 
+    from services.admin_library_service import sync_daily_vocab_objects_to_archive_in_tx
+
+    await sync_daily_vocab_objects_to_archive_in_tx(session, vocab_objects, target_date)
+
+    # Mark any matching items in vocabulary_reserve as used
+    norms_used = [v.normalized_expression for v in vocab_objects if v.normalized_expression]
+    if norms_used:
+        await session.execute(
+            update(VocabularyReserve)
+            .where(VocabularyReserve.normalized_expression.in_(norms_used))
+            .values(is_used=True, used_at=func.now())
+        )
+
     await session.commit()
     return await get_daily_lesson_by_date(session, target_date)  # type: ignore[return-value]
+
+
+async def ensure_vocabulary_reserve_seeded(
+    session: AsyncSession, seed_items: list[dict[str, Any]]
+) -> int:
+    """
+    Idempotently seed PostgreSQL `vocabulary_reserve` from validated seed items.
+    Marks items already present in `vocabulary` as `is_used=True`.
+    Returns current count of unused reserve items in PostgreSQL.
+    """
+    used_norms = await get_all_normalized_expressions(session)
+    existing_res_stmt = select(VocabularyReserve.normalized_expression)
+    existing_res_norms = {
+        row[0] for row in (await session.execute(existing_res_stmt)).all() if row[0]
+    }
+
+    inserted = 0
+    for item in seed_items:
+        norm = item.get("normalized_expression", "").strip()
+        if not norm or norm in existing_res_norms:
+            continue
+        is_already_used = norm in used_norms
+        session.add(
+            VocabularyReserve(
+                simple_word=item["simple_word"],
+                advanced_word=item["advanced_word"],
+                normalized_expression=norm,
+                translation_uz=item["translation_uz"],
+                translation_ru=item["translation_ru"],
+                definition_en=item["definition_en"],
+                basic_example_en=item.get("basic_example_en"),
+                example_en=item["example_en"],
+                example_uz=item["example_uz"],
+                example_ru=item["example_ru"],
+                cefr_level=item.get("cefr_level", "B2–C1"),
+                category=item.get("category", "everyday_upgrade"),
+                ielts_usage=item.get("ielts_usage", "Writing Task 2 & Speaking Part 3"),
+                source_name=item.get("source_name", "Cambridge Dictionary"),
+                source_url=item.get("source_url"),
+                quiz_question_uz=item.get("quiz_question_uz"),
+                quiz_question_ru=item.get("quiz_question_ru"),
+                quiz_question_en=item.get("quiz_question_en"),
+                option_a=item["options"][0],
+                option_b=item["options"][1],
+                option_c=item["options"][2],
+                option_d=item["options"][3],
+                correct_option=item["correct_option"],
+                is_used=is_already_used,
+            )
+        )
+        existing_res_norms.add(norm)
+        inserted += 1
+
+    # Sync is_used flag for any reserve items that were used in vocabulary
+    if used_norms:
+        await session.execute(
+            update(VocabularyReserve)
+            .where(
+                VocabularyReserve.normalized_expression.in_(used_norms),
+                VocabularyReserve.is_used.is_(False),
+            )
+            .values(is_used=True, used_at=func.now())
+        )
+
+    if inserted > 0 or used_norms:
+        await session.commit()
+
+    return await get_unused_reserve_count(session)
+
+
+async def get_unused_reserve_count(session: AsyncSession) -> int:
+    stmt = select(func.count(VocabularyReserve.id)).where(
+        VocabularyReserve.is_used.is_(False)
+    )
+    return int((await session.execute(stmt)).scalar_one() or 0)
+
+
+async def get_all_known_and_reserve_normalized_expressions(
+    session: AsyncSession,
+) -> set[str]:
+    used_norms = await get_all_normalized_expressions(session)
+    res_stmt = select(VocabularyReserve.normalized_expression)
+    res_norms = {row[0] for row in (await session.execute(res_stmt)).all() if row[0]}
+    return used_norms | res_norms
+
+
+async def save_items_to_postgres_reserve(
+    session: AsyncSession, items: list[dict[str, Any]]
+) -> int:
+    """Save newly generated Free Tier reserve items into PostgreSQL `vocabulary_reserve`."""
+    known = await get_all_known_and_reserve_normalized_expressions(session)
+    added = 0
+    for item in items:
+        norm = item.get("normalized_expression", "").strip()
+        if not norm or norm in known:
+            continue
+        session.add(
+            VocabularyReserve(
+                simple_word=item["simple_word"],
+                advanced_word=item["advanced_word"],
+                normalized_expression=norm,
+                translation_uz=item["translation_uz"],
+                translation_ru=item["translation_ru"],
+                definition_en=item["definition_en"],
+                basic_example_en=item.get("basic_example_en"),
+                example_en=item["example_en"],
+                example_uz=item["example_uz"],
+                example_ru=item["example_ru"],
+                cefr_level=item.get("cefr_level", "B2–C1"),
+                category=item.get("category", "everyday_upgrade"),
+                ielts_usage=item.get("ielts_usage", "Writing Task 2 & Speaking Part 3"),
+                source_name=item.get("source_name", "Cambridge Dictionary"),
+                source_url=item.get("source_url"),
+                quiz_question_uz=item.get("quiz_question_uz"),
+                quiz_question_ru=item.get("quiz_question_ru"),
+                quiz_question_en=item.get("quiz_question_en"),
+                option_a=item["options"][0],
+                option_b=item["options"][1],
+                option_c=item["options"][2],
+                option_d=item["options"][3],
+                correct_option=item["correct_option"],
+                is_used=False,
+            )
+        )
+        known.add(norm)
+        added += 1
+    if added > 0:
+        await session.commit()
+    return added
+
+
+async def fetch_unused_from_postgres_reserve(
+    session: AsyncSession,
+) -> list[VocabularyReserve]:
+    stmt = (
+        select(VocabularyReserve)
+        .where(VocabularyReserve.is_used.is_(False))
+        .order_by(VocabularyReserve.id)
+    )
+    return list((await session.execute(stmt)).scalars().all())
 
 
 async def get_vocabulary_paginated(

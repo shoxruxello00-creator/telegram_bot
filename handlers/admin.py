@@ -104,6 +104,7 @@ async def admin_command(
 
     async with get_session() as session:
         role = await crud.get_admin_role(session, user_id)
+        lang = await crud.get_user_language(session, user_id)
 
     if role is None:
         await update.message.reply_text("⛔ Sizda admin huquqi yo‘q.")
@@ -113,7 +114,7 @@ async def admin_command(
     await update.message.reply_text(
         text=_admin_home_text(role),
         parse_mode="HTML",
-        reply_markup=get_admin_panel_keyboard(is_super_admin=is_super),
+        reply_markup=get_admin_panel_keyboard(is_super_admin=is_super, lang=lang),
     )
 
 
@@ -251,6 +252,7 @@ async def admin_callback_handler(
     user_id = update.effective_user.id
     async with get_session() as session:
         role = await crud.get_admin_role(session, user_id)
+        lang = await crud.get_user_language(session, user_id)
 
     if role is None:
         await query.answer("⛔ Sizda admin huquqi yo‘q!", show_alert=True)
@@ -266,7 +268,7 @@ async def admin_callback_handler(
         await query.edit_message_text(
             text=_admin_home_text(role),
             parse_mode="HTML",
-            reply_markup=get_admin_panel_keyboard(is_super_admin=is_super),
+            reply_markup=get_admin_panel_keyboard(is_super_admin=is_super, lang=lang),
         )
         return
 
@@ -303,7 +305,7 @@ async def admin_callback_handler(
         await query.edit_message_text(
             text=_admin_home_text(role),
             parse_mode="HTML",
-            reply_markup=get_admin_panel_keyboard(is_super_admin=is_super),
+            reply_markup=get_admin_panel_keyboard(is_super_admin=is_super, lang=lang),
         )
         return
 
@@ -819,11 +821,44 @@ async def admin_callback_handler(
     # ==========================================================================
     # EXISTING ADMIN PANEL SECTIONS (AI Generator, Vocab, Lesson, Stats, Users)
     # ==========================================================================
-    if data == "admin:ai_status":
-        await query.answer()
+    if data in {"admin:ai_status", "admin:ai_replenish_reserve"}:
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+        from services.gemini_free_tier_policy import gemini_quota_tracker
+
         async with get_session() as session:
+            if data == "admin:ai_replenish_reserve":
+                await query.answer("⏳ Free Tier kvotasi doirasida zaxira tekshirilmoqda...")
+                await ai_generator.gradually_replenish_vocabulary_reserve(session)
+            else:
+                await query.answer()
+
+            unused_reserve = await ai_generator.ensure_postgres_reserve_seeded(session)
             summary = await crud.get_generation_summary(session)
-            logs = await crud.get_recent_generation_logs(session, limit=8)
+            logs = await crud.get_recent_generation_logs(session, limit=5)
+
+        snap = gemini_quota_tracker.get_dashboard_snapshot(
+            whitelist=ai_generator.whitelist,
+            reserve_unused_count=unused_reserve,
+            reserve_target_min=settings.RESERVE_MIN_WORDS,
+            reserve_target_max=settings.RESERVE_MAX_WORDS,
+        )
+        aq = snap["active_model_quota"]
+        errs = snap["errors"]
+        res_info = snap["reserve"]
+
+        model_rows: list[str] = []
+        for m_info in snap["models"]:
+            st_icon = (
+                "🟢"
+                if m_info["status"] == "AVAILABLE"
+                else ("⏳" if m_info["status"] == "COOLDOWN_429" else "🔴")
+            )
+            model_rows.append(
+                f"   {st_icon} <code>{html.escape(m_info['model'])}</code> — "
+                f"RPD: <b>{m_info['rpd_used']}/{m_info['rpd_limit']}</b> "
+                f"(qoldi: <b>{m_info['rpd_remaining']}</b>)"
+            )
+        models_block = "\n".join(model_rows)
 
         log_lines: list[str] = []
         for log in logs:
@@ -834,41 +869,80 @@ async def admin_callback_handler(
                 else ("ℹ️" if log.generation_status == "ALREADY_EXISTS" else "❌")
             )
             err_part = (
-                f"\n   ⚠️ <i>{html.escape(log.error_message[:120])}</i>"
+                f"\n   ⚠️ <i>{html.escape(log.error_message[:100])}</i>"
                 if log.error_message
                 else ""
             )
             log_lines.append(
-                f"{status_icon} <b>{log.lesson_date}</b> [{html.escape(log.generation_status)}]\n"
-                f"   📚 Yaratildi: <b>{log.generated_count}</b> | "
-                f"♻️ Rad etilgan takrorlar: <b>{log.rejected_duplicates}</b> | "
-                f"🔄 Retry: <b>{log.retry_count}</b> ({ts}){err_part}"
+                f"{status_icon} <b>{log.lesson_date}</b> [{html.escape(log.generation_status)}] — "
+                f"📚 {log.generated_count} | ♻️ {log.rejected_duplicates} | 🔄 {log.retry_count} ({ts}){err_part}"
             )
 
         logs_block = (
-            "\n\n".join(log_lines)
+            "\n".join(log_lines)
             if log_lines
             else "<i>Hozircha generatsiya tarixi yo‘q.</i>"
         )
+        ai_state_str = (
+            "🟡 Vaqtincha to‘xtatilgan (PostgreSQL Reserve Mode)"
+            if snap["ai_temporarily_disabled"]
+            else "🟢 Faol (Google AI Studio Free Tier)"
+        )
+        last_err_line = (
+            f"\n   • So‘nggi xato: <code>{html.escape(str(errs['last_error']))}</code>"
+            if errs.get("last_error")
+            else ""
+        )
 
         text = (
-            f"🤖 <b>AI Vocabulary Generator Holati</b>\n"
+            f"🤖 <b>GEMINI FREE TIER — API MONITORING DASHBOARD</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"🔌 Provider: <b>{html.escape(settings.AI_PROVIDER)}</b>\n"
-            f"🧠 Model: <code>{html.escape(settings.AI_MODEL)}</code>\n"
-            f"🔑 API Key sozlangan: <b>{'Ha ✅' if ai_generator._has_valid_api_key() else 'Zaxira (Reserve) rejim ⚠️'}</b>\n\n"
-            f"📊 <b>Umumiy ko‘rsatkichlar:</b>\n"
-            f"• Jami urinishlar: <b>{summary['total_runs']}</b>\n"
-            f"• Jami yaratilgan noyob iboralar: <b>{summary['total_generated']} ta</b>\n"
-            f"• Takrorlanish sababli rad etilganlar: <b>{summary['total_rejected']} ta</b>\n"
-            f"• Muvaffaqiyatsiz urinishlar: <b>{summary['failed_runs']} ta</b>\n\n"
-            f"📜 <b>So‘nggi generatsiya loglari:</b>\n"
+            f"💳 Siyosat: <b>{html.escape(snap['billing_policy'])}</b>\n"
+            f"🛡 Pullik API'lar bloklangan: <b>Ha ✅ ($0.00 kafolat)</b>\n"
+            f"📡 AI Holati: <b>{ai_state_str}</b>\n"
+            f"🧠 Faol Free Tier Model: <code>{html.escape(snap['active_model'])}</code>\n"
+            f"🔑 API Key: <b>{'Sozlangan ✅' if ai_generator._has_valid_api_key() else 'Zaxira (Reserve) rejim ⚠️'}</b>\n\n"
+            f"📊 <b>Bugungi So‘rovlar va Qolgan Free Tier Kvota ({snap['date']}):</b>\n"
+            f"• Bugungi jami so‘rovlar: <b>{snap['total_requests_today']} ta</b> (✅ Muvaffaqiyatli: <b>{snap['successful_requests_today']}</b>)\n"
+            f"• Sarflangan tokenlar (bugun): <b>{snap['total_tokens_today']:,}</b>\n"
+            f"• Faol model RPD (kunlik): <b>{aq['rpd_used']}/{aq['rpd_limit']}</b> (Qolgan kvota: <b>{aq['rpd_remaining']} so‘rov</b>)\n"
+            f"• Faol model RPM (daqiqalik): <b>{aq['rpm_used']}/{aq['rpm_limit']}</b> (Qolgan: <b>{aq['rpm_remaining']} RPM</b>)\n"
+            f"• Faol model TPM (token/daq): <b>{aq['tpm_used']:,}/{aq['tpm_limit']:,}</b>\n"
+            f"• Umumiy Free Tier qolgan RPD: <b>{snap['combined_free_rpd_remaining']:,} / {snap['combined_free_rpd_limit']:,}</b>\n\n"
+            f"⚠️ <b>API Xatolar Monitoringi (Bugun):</b>\n"
+            f"• 404 (Model topilmadi): <b>{errs['errors_404']}</b> | 429 (Kvota limiti): <b>{errs['errors_429']}</b>\n"
+            f"• Validatsiya rad etgan: <b>{errs['errors_validation']}</b> | Boshqa: <b>{errs['errors_other']}</b>"
+            f"{last_err_line}\n\n"
+            f"🏦 <b>PostgreSQL Lug‘at Zaxirasi (100–300 maqsad):</b>\n"
+            f"• Ishlatilmagan noyob zaxira: <b>{res_info['unused_count']} ta</b> "
+            f"({'✅ Normada' if res_info['healthy'] else '⏳ To‘ldirilmoqda'}: {res_info['target_min']}–{res_info['target_max']})\n"
+            f"• Bugungi zaxiraga murojaatlar: <b>{res_info['fallbacks_today']} marta</b>\n\n"
+            f"📋 <b>Tasdiqlangan Free Tier Modellar Whitelist:</b>\n"
+            f"{models_block}\n\n"
+            f"📜 <b>Bazadagi umumiy tarix ({summary['total_runs']} run | {summary['total_generated']} so‘z):</b>\n"
             f"{logs_block}"
+        ).replace(",", " ")
+
+        kb = InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(
+                        "🔄 Monitoringni yangilash", callback_data="admin:ai_status"
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        "🏦 Zaxirani +10 ta boyitish (Free Tier)",
+                        callback_data="admin:ai_replenish_reserve",
+                    )
+                ],
+                [InlineKeyboardButton("🔙 Admin Panel", callback_data="admin:home")],
+            ]
         )
         await query.edit_message_text(
             text=text,
             parse_mode="HTML",
-            reply_markup=get_admin_back_keyboard(),
+            reply_markup=kb,
         )
         return
 

@@ -6,16 +6,27 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
-import httpx
-import jsonschema
-from openai import AsyncOpenAI
-from pydantic import BaseModel, Field, field_validator
-from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import AsyncSession
+try:
+    import httpx
+except ImportError:
+    httpx = None  # type: ignore[assignment]
+
+try:
+    import jsonschema
+except ImportError:
+    jsonschema = None  # type: ignore[assignment]
 
 from config import settings
-from database import crud
-from database.models import DailyLesson
+from services.gemini_free_tier_policy import (
+    FreeTierQuotaExhaustedError,
+    NoVerifiedFreeModelAvailableError,
+    PaidApiForbiddenError,
+    enforce_free_tier_provider_and_model,
+    gemini_quota_tracker,
+    is_verified_free_tier_model,
+    normalize_gemini_model_name,
+    sanitize_free_tier_whitelist,
+)
 from services.normalizer import is_duplicate_or_near_duplicate, normalize_expression
 
 logger = logging.getLogger(__name__)
@@ -141,6 +152,22 @@ _ENGLISH_EXPRESSION_RE = re.compile(r"^[A-Za-z][A-Za-z0-9\s\-'’/(),.]{1,120}$"
 _VERY_ADJECTIVE_RE = re.compile(r"^very\s+[a-z]+(?:\s+[a-z]+)?$", re.IGNORECASE)
 
 
+def _validate_dict_schema(instance: dict[str, Any], is_batch: bool = False) -> None:
+    if jsonschema is not None:
+        jsonschema.validate(
+            instance=instance,
+            schema=VOCABULARY_BATCH_SCHEMA if is_batch else VOCABULARY_ITEM_SCHEMA,
+        )
+        return
+    if is_batch:
+        if not isinstance(instance, dict) or not isinstance(instance.get("items"), list) or not instance["items"]:
+            raise ValueError("Batch payload must contain a non-empty 'items' list.")
+        return
+    for req_key in VOCABULARY_ITEM_SCHEMA["required"]:
+        if req_key not in instance:
+            raise ValueError(f"Missing required field '{req_key}'")
+
+
 def is_very_adjective_pattern(simple_word: str) -> bool:
     """Detect 'very + adjective' basic expressions so we never overuse them."""
     return bool(_VERY_ADJECTIVE_RE.match((simple_word or "").strip()))
@@ -197,40 +224,6 @@ def sanitize_untrusted_text(value: Any, max_len: int = 350) -> str:
     return cleaned[:max_len]
 
 
-class VocabularyCandidateModel(BaseModel):
-    simple_word: str = Field(..., min_length=2, max_length=150)
-    advanced_word: str = Field(..., min_length=2, max_length=150)
-    normalized_expression: str = Field(default="")
-    translation_uz: str = Field(..., min_length=2, max_length=300)
-    translation_ru: str = Field(..., min_length=2, max_length=300)
-    definition_en: str = Field(..., min_length=5, max_length=400)
-    basic_example_en: str = Field(..., min_length=5, max_length=400)
-    example_en: str = Field(..., min_length=10, max_length=400)
-    example_uz: str = Field(..., min_length=5, max_length=400)
-    example_ru: str = Field(..., min_length=5, max_length=400)
-    cefr_level: str = Field(default="B2–C1")
-    category: str = Field(default="everyday_upgrade")
-    ielts_usage: str = Field(default="Writing Task 2 & Speaking Part 3")
-    source_name: str = Field(default="Cambridge Dictionary")
-    source_url: str | None = Field(default=None)
-    quiz_question_uz: str | None = Field(default=None)
-    quiz_question_ru: str | None = Field(default=None)
-    quiz_question_en: str | None = Field(default=None)
-    options: list[str] = Field(..., min_length=4, max_length=4)
-    correct_option: int = Field(..., ge=0, le=3)
-
-    @field_validator("advanced_word")
-    @classmethod
-    def validate_natural_english(cls, v: str) -> str:
-        cleaned = sanitize_untrusted_text(v, 120)
-        if not _ENGLISH_EXPRESSION_RE.match(cleaned):
-            raise ValueError(f"Expression '{cleaned}' does not look like natural English.")
-        word_count = len(cleaned.split())
-        if word_count > 12:
-            raise ValueError("Advanced expression is too long (max 12 words).")
-        return cleaned
-
-
 @dataclass
 class GenerationResult:
     success: bool
@@ -240,28 +233,105 @@ class GenerationResult:
     rejected_duplicates: int = 0
     retry_count: int = 0
     error_message: str | None = None
-    lesson: DailyLesson | None = None
+    lesson: Any = None
     items: list[dict[str, Any]] = field(default_factory=list)
 
 
 class AIVocabularyGenerator:
     """
-    Autonomous Everyday -> Advanced IELTS Vocabulary & Quiz Generator
-    enforcing the exact 4 + 2 + 2 + 2 daily category distribution,
-    anti-'very + adjective' filtering, formality nuance notes, and deduplication.
+    STRICT GEMINI FREE TIER — ZERO COST POLICY Vocabulary & Quiz Generator.
+    - Exclusively uses verified Google AI Studio Free Tier Gemini models.
+    - Never calls paid models or paid providers (OpenAI, Anthropic, etc.).
+    - Respects Free Tier RPM, TPM, and RPD limits via `gemini_quota_tracker`.
+    - On 404: switches ONLY to another verified Free Tier model.
+    - On 429: immediately stops retries and uses the PostgreSQL vocabulary reserve (100–300 items).
+    - On retry: requests ONLY the missing vocabulary items by category.
     """
 
     def __init__(self) -> None:
-        self.provider = settings.AI_PROVIDER
+        self.whitelist: list[str] = sanitize_free_tier_whitelist(
+            list(getattr(settings, "GEMINI_FREE_TIER_MODELS", ()))
+        )
+        self.provider, self.model = enforce_free_tier_provider_and_model(
+            settings.AI_PROVIDER,
+            settings.AI_MODEL,
+            self.whitelist,
+        )
         self.api_key = settings.AI_API_KEY
-        self.model = settings.AI_MODEL
-        self.base_url = settings.AI_BASE_URL
 
     def _has_valid_api_key(self) -> bool:
         if not self.api_key:
             return False
-        placeholder_tokens = {"YOUR_AI_API_KEY", "YOUR_API_KEY", "NONE", "NULL", ""}
+        placeholder_tokens = {
+            "YOUR_AI_API_KEY",
+            "YOUR_GOOGLE_AI_STUDIO_FREE_TIER_KEY",
+            "YOUR_API_KEY",
+            "NONE",
+            "NULL",
+            "",
+        }
         return self.api_key.upper() not in placeholder_tokens
+
+    def _assert_zero_cost_free_tier_policy(self, model_name: str) -> str:
+        """
+        Requirements 1, 2, 3, 4, 6:
+        Block any non-Gemini provider or any model not in the verified Free Tier whitelist.
+        """
+        if self.provider != "gemini":
+            raise PaidApiForbiddenError(
+                f"ZERO COST POLICY VIOLATION: Provider '{self.provider}' is forbidden. "
+                "Only Google Gemini Free Tier is permitted."
+            )
+        norm = normalize_gemini_model_name(model_name)
+        if not is_verified_free_tier_model(norm) or norm not in self.whitelist:
+            raise PaidApiForbiddenError(
+                f"ZERO COST POLICY VIOLATION: Model '{model_name}' is not a verified Free Tier Gemini model."
+            )
+        return norm
+
+    async def verify_remote_free_models_if_needed(self) -> list[str]:
+        """
+        Requirement 3: Verify model availability and Free Tier eligibility against
+        Google AI Studio `/v1beta/models` before selecting a model (cached for 6h).
+        """
+        if not self._has_valid_api_key() or httpx is None:
+            return list(self.whitelist)
+        if not gemini_quota_tracker.needs_remote_model_verification():
+            return gemini_quota_tracker.select_eligible_free_models(
+                self.model, self.whitelist
+            )
+
+        url = "https://generativelanguage.googleapis.com/v1beta/models"
+        headers = {"x-goog-api-key": self.api_key}
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.get(url, headers=headers)
+                if resp.status_code == 200:
+                    payload = resp.json()
+                    remote_free: set[str] = set()
+                    for m_obj in payload.get("models", []):
+                        raw_name = str(m_obj.get("name", ""))
+                        methods = m_obj.get("supportedGenerationMethods", []) or []
+                        norm = normalize_gemini_model_name(raw_name)
+                        if (
+                            "generateContent" in methods
+                            and norm in self.whitelist
+                            and is_verified_free_tier_model(norm)
+                        ):
+                            remote_free.add(norm)
+                    if remote_free:
+                        gemini_quota_tracker.set_remote_verified_models(remote_free)
+                        logger.info(
+                            "Verified %d available Gemini Free Tier models on Google AI Studio: %s",
+                            len(remote_free),
+                            sorted(remote_free),
+                        )
+        except Exception as exc:
+            logger.debug("Remote ListModels check skipped (using local Free Tier whitelist): %s", exc)
+
+        return gemini_quota_tracker.select_eligible_free_models(
+            self.model, self.whitelist
+        )
 
     def _build_system_prompt(self) -> str:
         return (
@@ -285,7 +355,7 @@ class AIVocabularyGenerator:
         excluded_expressions: list[str],
     ) -> str:
         total_count = sum(needed_by_category.values())
-        excl_sample = excluded_expressions[-400:] if excluded_expressions else []
+        excl_sample = excluded_expressions[-350:] if excluded_expressions else []
         excl_text = ", ".join(excl_sample) if excl_sample else "None yet"
 
         quota_lines = []
@@ -348,103 +418,125 @@ class AIVocabularyGenerator:
         needed_by_category: dict[str, int],
         excluded_expressions: list[str],
     ) -> dict[str, Any]:
+        """
+        Call Google AI Studio Gemini Free Tier API exclusively.
+        - Verifies Free Tier eligibility and RPM/TPM/RPD quota before requesting.
+        - On 404: switches ONLY to another verified Free Tier model in `self.whitelist`.
+        - On 429: records quota exhaustion and raises `FreeTierQuotaExhaustedError` immediately (no retries).
+        """
+        if self.provider != "gemini":
+            raise PaidApiForbiddenError(
+                f"Paid or non-Gemini provider '{self.provider}' is strictly prohibited."
+            )
+        if httpx is None:
+            raise RuntimeError("httpx client is not available in this environment.")
+
         system_prompt = self._build_system_prompt()
         user_prompt = self._build_user_prompt(
             needed_by_category, excluded_expressions
         )
+        est_tokens = max(800, (len(system_prompt) + len(user_prompt)) // 4 + 1200)
 
-        if self.provider in {"openai", "groq", "deepseek", "openrouter", "together"}:
-            client_kwargs: dict[str, Any] = {"api_key": self.api_key}
-            if self.base_url:
-                client_kwargs["base_url"] = self.base_url
-            client = AsyncOpenAI(**client_kwargs)
-            response = await client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                response_format={"type": "json_object"},
-                temperature=0.7,
-                timeout=45.0,
+        await self.verify_remote_free_models_if_needed()
+        candidate_models = gemini_quota_tracker.select_eligible_free_models(
+            preferred_model=self.model,
+            whitelist=self.whitelist,
+            estimated_tokens=est_tokens,
+        )
+        if not candidate_models:
+            reason = (
+                "No verified Gemini Free Tier model is currently available within RPM/TPM/RPD quota."
             )
-            raw_content = response.choices[0].message.content or "{}"
-            return self._extract_json_dict(raw_content)
+            gemini_quota_tracker.mark_ai_temporarily_disabled(reason)
+            raise NoVerifiedFreeModelAvailableError(reason)
 
-        if self.provider == "gemini":
-            primary_model = (self.model or "gemini-2.5-flash").strip()
-            if primary_model.startswith("models/"):
-                primary_model = primary_model.split("models/", 1)[1]
-            candidate_models = [primary_model]
-            for fallback_m in (
-                "gemini-2.5-flash",
-                "gemini-2.0-flash",
-                "gemini-2.5-flash-preview-05-20",
-            ):
-                if fallback_m not in candidate_models:
-                    candidate_models.append(fallback_m)
+        payload = {
+            "systemInstruction": {"parts": [{"text": system_prompt}]},
+            "contents": [{"parts": [{"text": user_prompt}]}],
+            "generationConfig": {
+                "temperature": 0.7,
+                "responseMimeType": "application/json",
+            },
+        }
+        headers = {
+            "x-goog-api-key": self.api_key,
+            "Content-Type": "application/json",
+        }
 
-            payload = {
-                "systemInstruction": {"parts": [{"text": system_prompt}]},
-                "contents": [{"parts": [{"text": user_prompt}]}],
-                "generationConfig": {
-                    "temperature": 0.7,
-                    "responseMimeType": "application/json",
-                },
-            }
-            headers = {
-                "x-goog-api-key": self.api_key,
-                "Content-Type": "application/json",
-            }
-            last_exc: Exception | None = None
-            async with httpx.AsyncClient(timeout=45.0) as http_client:
-                for model_name in candidate_models:
-                    url = (
-                        f"https://generativelanguage.googleapis.com/v1beta/models/"
-                        f"{model_name}:generateContent"
+        async with httpx.AsyncClient(timeout=45.0) as http_client:
+            for model_name in candidate_models:
+                verified_model = self._assert_zero_cost_free_tier_policy(model_name)
+                can_run, quota_reason = gemini_quota_tracker.can_use_model(
+                    verified_model, estimated_tokens=est_tokens
+                )
+                if not can_run:
+                    logger.info(
+                        "Skipping Free Tier model '%s' due to quota guard: %s",
+                        verified_model,
+                        quota_reason,
                     )
-                    resp = await http_client.post(url, headers=headers, json=payload)
-                    if resp.status_code == 404:
-                        last_exc = httpx.HTTPStatusError(
-                            f"Gemini model '{model_name}' not found (404)",
-                            request=resp.request,
-                            response=resp,
-                        )
-                        continue
-                    resp.raise_for_status()
-                    data = resp.json()
-                    text_out = (
-                        data.get("candidates", [{}])[0]
-                        .get("content", {})
-                        .get("parts", [{}])[0]
-                        .get("text", "{}")
-                    )
-                    return self._extract_json_dict(text_out)
-            if last_exc:
-                raise last_exc
-            raise RuntimeError("Gemini API call failed across all candidate models.")
+                    continue
 
-        if self.provider == "anthropic":
-            url = "https://api.anthropic.com/v1/messages"
-            headers = {
-                "x-api-key": self.api_key,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json",
-            }
-            payload = {
-                "model": self.model or "claude-3-5-sonnet-latest",
-                "max_tokens": 4096,
-                "system": system_prompt,
-                "messages": [{"role": "user", "content": user_prompt}],
-            }
-            async with httpx.AsyncClient(timeout=45.0) as http_client:
+                gemini_quota_tracker.record_request_start(
+                    verified_model, estimated_tokens=est_tokens
+                )
+                url = (
+                    f"https://generativelanguage.googleapis.com/v1beta/models/"
+                    f"{verified_model}:generateContent"
+                )
                 resp = await http_client.post(url, headers=headers, json=payload)
-                resp.raise_for_status()
+
+                # Requirement 9: On 404, switch ONLY to another verified Free Tier model
+                if resp.status_code == 404:
+                    gemini_quota_tracker.record_404_unavailable(
+                        verified_model, f"HTTP 404 on {verified_model}"
+                    )
+                    logger.warning(
+                        "Gemini Free Tier model '%s' returned 404. Switching to next verified Free Tier model.",
+                        verified_model,
+                    )
+                    continue
+
+                # Requirement 10: On 429 quota error, stop excessive retries immediately and use reserve
+                if resp.status_code == 429:
+                    gemini_quota_tracker.record_429_quota_error(
+                        verified_model, resp.text[:160]
+                    )
+                    logger.warning(
+                        "Gemini Free Tier model '%s' returned 429 (Quota Exhausted). "
+                        "Stopping retries immediately and switching to PostgreSQL vocabulary reserve.",
+                        verified_model,
+                    )
+                    raise FreeTierQuotaExhaustedError(
+                        f"Gemini Free Tier 429 Quota Reached on '{verified_model}'."
+                    )
+
+                if resp.status_code >= 400:
+                    err_txt = f"HTTP {resp.status_code} on {verified_model}: {resp.text[:160]}"
+                    gemini_quota_tracker.record_other_error(verified_model, err_txt)
+                    resp.raise_for_status()
+
                 data = resp.json()
-                text_out = data.get("content", [{}])[0].get("text", "{}")
+                usage_meta = data.get("usageMetadata", {}) or {}
+                actual_tokens = int(
+                    usage_meta.get("totalTokenCount") or est_tokens
+                )
+                gemini_quota_tracker.record_request_success(
+                    verified_model, actual_tokens=actual_tokens
+                )
+                self.model = verified_model
+
+                text_out = (
+                    data.get("candidates", [{}])[0]
+                    .get("content", {})
+                    .get("parts", [{}])[0]
+                    .get("text", "{}")
+                )
                 return self._extract_json_dict(text_out)
 
-        raise ValueError(f"Unsupported AI_PROVIDER: {self.provider}")
+        reason = "All verified Gemini Free Tier models in whitelist returned 404 or are unavailable."
+        gemini_quota_tracker.mark_ai_temporarily_disabled(reason)
+        raise NoVerifiedFreeModelAvailableError(reason)
 
     @staticmethod
     def _extract_json_dict(raw_text: str) -> dict[str, Any]:
@@ -466,10 +558,15 @@ class AIVocabularyGenerator:
     ) -> dict[str, Any]:
         """
         Sanitize untrusted fields, derive fallback basic_example_en / ielts_usage
-        if omitted on legacy items, and validate against JSON Schema and Pydantic.
+        if omitted on legacy items, and validate against JSON Schema.
         """
         adv = sanitize_untrusted_text(raw_item.get("advanced_word", ""), 120)
         simple = sanitize_untrusted_text(raw_item.get("simple_word", ""), 120)
+        if not _ENGLISH_EXPRESSION_RE.match(adv):
+            raise ValueError(f"Expression '{adv}' does not look like natural English.")
+        if len(adv.split()) > 12:
+            raise ValueError("Advanced expression is too long (max 12 words).")
+
         cefr = normalize_cefr_level(raw_item.get("cefr_level", "B2–C1"))
         category = normalize_category(
             raw_item.get("category", "everyday_upgrade"),
@@ -544,7 +641,7 @@ class AIVocabularyGenerator:
                 )
             else:
                 basic_example_en = sanitize_untrusted_text(
-                    f"In everyday English: \"{simple}\".", 350
+                    f'In everyday English: "{simple}".', 350
                 )
 
         q_uz = sanitize_untrusted_text(
@@ -559,7 +656,7 @@ class AIVocabularyGenerator:
         )
         q_en = sanitize_untrusted_text(
             raw_item.get("quiz_question_en")
-            or f"Which advanced IELTS expression best upgrades \"{simple}\" ({ielts_usage})?",
+            or f'Which advanced IELTS expression best upgrades "{simple}" ({ielts_usage})?',
             250,
         )
 
@@ -585,74 +682,76 @@ class AIVocabularyGenerator:
             "correct_option": correct_idx,
         }
 
-        jsonschema.validate(instance=sanitized_dict, schema=VOCABULARY_ITEM_SCHEMA)
-        model = VocabularyCandidateModel(**sanitized_dict)
-        norm_expr = normalize_expression(model.advanced_word)
-        if not norm_expr:
+        _validate_dict_schema(sanitized_dict, is_batch=False)
+        if not norm_adv:
             raise ValueError("Normalized expression cannot be empty.")
 
-        result = model.model_dump()
-        result["normalized_expression"] = norm_expr
-        return result
+        sanitized_dict["normalized_expression"] = norm_adv
+        return sanitized_dict
 
     @staticmethod
     def _compute_target_quotas(required_count: int) -> dict[str, int]:
         if required_count == 10:
             return dict(DAILY_CATEGORY_QUOTAS)
-        # Proportional fallback if custom DAILY_WORD_COUNT is used
         quotas = {
             "everyday_upgrade": max(1, round(required_count * 0.4)),
             "academic_upgrade": max(0, round(required_count * 0.2)),
             "collocation": max(0, round(required_count * 0.2)),
             "phrasal_verb": 0,
         }
-        quotas["phrasal_verb"] = max(
-            0, required_count - sum(quotas.values())
-        )
+        quotas["phrasal_verb"] = max(0, required_count - sum(quotas.values()))
         return quotas
 
-    def _load_unused_from_reserve_by_quotas(
-        self,
-        needed_by_category: dict[str, int],
-        known_normalized: set[str],
-        very_count_so_far: int = 0,
-    ) -> tuple[list[dict[str, Any]], int]:
-        """
-        Load unused items from `data/reserve_vocabulary.json` respecting the
-        4 + 2 + 2 + 2 category quotas (`everyday_upgrade`, `academic_upgrade`,
-        `collocation`, `phrasal_verb`) and the anti-'very + adjective' filter.
-        """
+    def load_all_validated_seed_reserve_items(self) -> list[dict[str, Any]]:
         if not RESERVE_FILE_PATH.exists():
-            return [], 0
-
+            return []
         try:
             raw_list = json.loads(RESERVE_FILE_PATH.read_text(encoding="utf-8"))
         except Exception as exc:
             logger.error("Failed to read reserve vocabulary file: %s", exc)
-            return [], 0
+            return []
 
+        validated_list: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for raw_item in raw_list:
+            try:
+                v = self.validate_and_sanitize_item(
+                    raw_item, for_daily_distribution=True
+                )
+                norm = v["normalized_expression"]
+                if norm not in seen:
+                    seen.add(norm)
+                    validated_list.append(v)
+            except Exception:
+                continue
+        return validated_list
+
+    def _select_from_candidate_list_by_quotas(
+        self,
+        raw_candidates: list[dict[str, Any]],
+        needed_by_category: dict[str, int],
+        known_normalized: set[str],
+        very_count_so_far: int = 0,
+    ) -> tuple[list[dict[str, Any]], int]:
         remaining = dict(needed_by_category)
         total_needed = sum(remaining.values())
         selected: list[dict[str, Any]] = []
         rejected_dups = 0
         very_count = very_count_so_far
-
-        # First pass: strictly match needed category quotas
         unmatched_valid: list[dict[str, Any]] = []
-        for raw_item in raw_list:
+
+        for raw_item in raw_candidates:
             if len(selected) >= total_needed:
                 break
             try:
                 validated = self.validate_and_sanitize_item(
                     raw_item, for_daily_distribution=True
                 )
-            except Exception as exc:
-                logger.warning("Skipping invalid reserve item: %s", exc)
+            except Exception:
                 continue
 
-            if is_very_adjective_pattern(validated["simple_word"]):
-                if very_count >= 1:
-                    continue
+            if is_very_adjective_pattern(validated["simple_word"]) and very_count >= 1:
+                continue
 
             is_dup, norm_expr = is_duplicate_or_near_duplicate(
                 validated["advanced_word"], known_normalized
@@ -672,7 +771,6 @@ class AIVocabularyGenerator:
             else:
                 unmatched_valid.append(validated)
 
-        # Second pass: if a category in reserve was exhausted, fill remaining slots from other unused valid items
         for cand in unmatched_valid:
             if len(selected) >= total_needed:
                 break
@@ -687,6 +785,26 @@ class AIVocabularyGenerator:
 
         return selected, rejected_dups
 
+    def _load_unused_from_reserve_by_quotas(
+        self,
+        needed_by_category: dict[str, int],
+        known_normalized: set[str],
+        very_count_so_far: int = 0,
+    ) -> tuple[list[dict[str, Any]], int]:
+        if not RESERVE_FILE_PATH.exists():
+            return [], 0
+        try:
+            raw_list = json.loads(RESERVE_FILE_PATH.read_text(encoding="utf-8"))
+        except Exception as exc:
+            logger.error("Failed to read reserve vocabulary file: %s", exc)
+            return [], 0
+        return self._select_from_candidate_list_by_quotas(
+            raw_candidates=raw_list,
+            needed_by_category=needed_by_category,
+            known_normalized=known_normalized,
+            very_count_so_far=very_count_so_far,
+        )
+
     def _load_unused_from_reserve(
         self,
         needed_count: int,
@@ -698,12 +816,156 @@ class AIVocabularyGenerator:
             known_normalized=known_normalized,
         )
 
+    async def ensure_postgres_reserve_seeded(self, session: Any) -> int:
+        """
+        Requirement 11: Seed the 146 curated 4+2+2+2 reserve items into PostgreSQL
+        `vocabulary_reserve` so at least 100+ unused reserve items are always ready in DB.
+        """
+        from database import crud
+
+        seed_items = self.load_all_validated_seed_reserve_items()
+        return await crud.ensure_vocabulary_reserve_seeded(session, seed_items)
+
+    async def _load_unused_from_postgres_and_file_reserve(
+        self,
+        session: Any,
+        needed_by_category: dict[str, int],
+        known_normalized: set[str],
+        very_count_so_far: int = 0,
+    ) -> tuple[list[dict[str, Any]], int]:
+        """
+        Pull unused items from PostgreSQL `vocabulary_reserve` first, then file reserve if needed.
+        """
+        from database import crud
+
+        await self.ensure_postgres_reserve_seeded(session)
+        pg_rows = await crud.fetch_unused_from_postgres_reserve(session)
+        pg_dicts = [
+            {
+                "simple_word": r.simple_word,
+                "advanced_word": r.advanced_word,
+                "translation_uz": r.translation_uz,
+                "translation_ru": r.translation_ru,
+                "definition_en": r.definition_en,
+                "basic_example_en": r.basic_example_en,
+                "example_en": r.example_en,
+                "example_uz": r.example_uz,
+                "example_ru": r.example_ru,
+                "cefr_level": r.cefr_level,
+                "category": r.category,
+                "ielts_usage": r.ielts_usage,
+                "source_name": r.source_name,
+                "source_url": r.source_url,
+                "quiz_question_uz": r.quiz_question_uz,
+                "quiz_question_ru": r.quiz_question_ru,
+                "quiz_question_en": r.quiz_question_en,
+                "options": r.get_options(),
+                "correct_option": r.correct_option,
+            }
+            for r in pg_rows
+        ]
+        selected, rejected_dups = self._select_from_candidate_list_by_quotas(
+            raw_candidates=pg_dicts,
+            needed_by_category=needed_by_category,
+            known_normalized=known_normalized,
+            very_count_so_far=very_count_so_far,
+        )
+        gemini_quota_tracker.record_reserve_fallback()
+        return selected, rejected_dups
+
+    async def gradually_replenish_vocabulary_reserve(
+        self,
+        session: Any,
+        batch_size: int = 10,
+    ) -> dict[str, Any]:
+        """
+        Requirement 11: Maintain a reserve of 100–300 unique, unused vocabulary items,
+        generated gradually within free quotas.
+        Generates at most 1 batch (10 items) per invocation when Free Tier quota has headroom.
+        Never retries on error and never incurs paid API usage.
+        """
+        from database import crud
+
+        unused_count = await self.ensure_postgres_reserve_seeded(session)
+        min_target = getattr(settings, "RESERVE_MIN_WORDS", 100)
+        max_target = getattr(settings, "RESERVE_MAX_WORDS", 300)
+
+        if unused_count >= max_target:
+            return {
+                "replenished": 0,
+                "unused_count": unused_count,
+                "status": "RESERVE_FULL",
+            }
+
+        if not self._has_valid_api_key():
+            return {
+                "replenished": 0,
+                "unused_count": unused_count,
+                "status": "NO_API_KEY_SEED_ACTIVE",
+            }
+
+        if not gemini_quota_tracker.has_comfortable_quota_for_gradual_reserve(
+            self.whitelist
+        ):
+            return {
+                "replenished": 0,
+                "unused_count": unused_count,
+                "status": "SKIPPED_TO_CONSERVE_FREE_QUOTA",
+            }
+
+        all_known = await crud.get_all_known_and_reserve_normalized_expressions(session)
+        quotas = self._compute_target_quotas(batch_size)
+        try:
+            raw_payload = await self._call_ai_api(
+                needed_by_category=quotas,
+                excluded_expressions=sorted(all_known),
+            )
+            _validate_dict_schema(raw_payload, is_batch=True)
+            valid_new: list[dict[str, Any]] = []
+            for raw_item in raw_payload.get("items", []):
+                try:
+                    v = self.validate_and_sanitize_item(
+                        raw_item, for_daily_distribution=True
+                    )
+                    is_dup, norm_expr = is_duplicate_or_near_duplicate(
+                        v["advanced_word"], all_known
+                    )
+                    if not is_dup:
+                        v["normalized_expression"] = norm_expr
+                        all_known.add(norm_expr)
+                        valid_new.append(v)
+                except Exception:
+                    continue
+
+            added = await crud.save_items_to_postgres_reserve(session, valid_new)
+            new_unused = await crud.get_unused_reserve_count(session)
+            logger.info(
+                "Gradual Free Tier reserve replenishment added %d items (unused reserve=%d, target=%d..%d)",
+                added,
+                new_unused,
+                min_target,
+                max_target,
+            )
+            return {
+                "replenished": added,
+                "unused_count": new_unused,
+                "status": "REPLENISHED",
+            }
+        except Exception as exc:
+            logger.info("Gradual reserve replenishment paused to respect Free Tier: %s", exc)
+            return {
+                "replenished": 0,
+                "unused_count": unused_count,
+                "status": f"PAUSED: {exc}",
+            }
+
     async def generate_daily_lesson(
         self,
-        session: AsyncSession,
+        session: Any,
         target_date: date | None = None,
         word_count: int | None = None,
-        max_retries: int = 4,
+        max_retries: int = 3,
+        bot: Any = None,
     ) -> GenerationResult:
         """
         Generate and save a daily lesson of 10 unique Everyday -> Advanced IELTS upgrades
@@ -712,12 +974,22 @@ class AIVocabularyGenerator:
         - 2 academic_upgrade
         - 2 collocation
         - 2 phrasal_verb
-        Idempotent for `target_date`.
+        Enforces Strict Gemini Free Tier Zero-Cost Policy:
+        - Missing-only retries (Requirement 12)
+        - Immediate stop on 429 & fallback to PostgreSQL reserve (Requirement 10)
+        - Temporary disable & admin notification if no verified free model is available (Requirement 16)
         """
+        from database import crud
+        try:
+            from sqlalchemy.exc import IntegrityError
+        except ImportError:
+            class IntegrityError(Exception):  # type: ignore[no-redef]
+                pass
+
         lesson_date = target_date or settings.today()
         required_count = word_count or settings.DAILY_WORD_COUNT
 
-        # 1. Check idempotency
+        # 1. Check idempotency (Requirement 14: prevent unnecessary API calls)
         existing_lesson = await crud.get_daily_lesson_by_date(session, lesson_date)
         if existing_lesson is not None:
             logger.info("Daily lesson for %s already exists; skipping generation.", lesson_date)
@@ -729,10 +1001,13 @@ class AIVocabularyGenerator:
                 lesson=existing_lesson,
             )
 
+        # Ensure PostgreSQL vocabulary reserve (100-300 items) is seeded
+        await self.ensure_postgres_reserve_seeded(session)
+
         # 2. Load ALL historical normalized expressions from PostgreSQL
         known_normalized = await crud.get_all_normalized_expressions(session)
         logger.info(
-            "Starting 4+2+2+2 IELTS generation for %s. Historical vocabulary count in DB: %d",
+            "Starting Strict Free Tier 4+2+2+2 IELTS generation for %s. Historical DB count: %d",
             lesson_date,
             len(known_normalized),
         )
@@ -747,9 +1022,10 @@ class AIVocabularyGenerator:
         last_error: str | None = None
         used_fallback = False
 
-        # 3. Try AI API generation with automatic retry mechanism
+        # 3. Try Gemini Free Tier API generation with missing-items-only retry
         if self._has_valid_api_key():
             for attempt in range(1, max_retries + 1):
+                # Requirement 12: Generate ONLY the missing vocabulary items during retry attempts
                 needed = sum(remaining_quotas.values())
                 if needed <= 0:
                     break
@@ -762,9 +1038,7 @@ class AIVocabularyGenerator:
                         needed_by_category=remaining_quotas,
                         excluded_expressions=sorted(known_normalized),
                     )
-                    jsonschema.validate(
-                        instance=raw_payload, schema=VOCABULARY_BATCH_SCHEMA
-                    )
+                    _validate_dict_schema(raw_payload, is_batch=True)
                     raw_items = raw_payload.get("items", [])
 
                     for raw_item in raw_items:
@@ -775,18 +1049,16 @@ class AIVocabularyGenerator:
                                 raw_item, for_daily_distribution=True
                             )
                         except Exception as val_err:
+                            gemini_quota_tracker.record_other_error(
+                                self.model, str(val_err), is_validation=True
+                            )
                             logger.warning(
                                 "AI item failed schema/content validation: %s", val_err
                             )
                             continue
 
-                        # Reject excessive 'very + adjective' patterns
                         if is_very_adjective_pattern(validated["simple_word"]):
                             if very_pattern_count >= 1:
-                                logger.info(
-                                    "Rejected 'very + adjective' item '%s' to maintain variety.",
-                                    validated["simple_word"],
-                                )
                                 continue
 
                         cat = validated["category"]
@@ -798,11 +1070,6 @@ class AIVocabularyGenerator:
                         )
                         if is_dup:
                             rejected_duplicates += 1
-                            logger.info(
-                                "Rejected duplicate/near-duplicate AI expression: '%s' (%s)",
-                                validated["advanced_word"],
-                                norm_expr,
-                            )
                             continue
 
                         validated["normalized_expression"] = norm_expr
@@ -812,19 +1079,48 @@ class AIVocabularyGenerator:
                         remaining_quotas[cat] -= 1
                         accepted_items.append(validated)
 
+                except FreeTierQuotaExhaustedError as quota_err:
+                    # Requirement 10: Stop excessive retries immediately on 429 and use PostgreSQL reserve
+                    last_error = str(quota_err)
+                    logger.warning(
+                        "Free Tier 429 quota reached on attempt %d. Stopping retries immediately and using PostgreSQL reserve.",
+                        attempt,
+                    )
+                    break
+                except (NoVerifiedFreeModelAvailableError, PaidApiForbiddenError) as model_err:
+                    # Requirement 16: Disable AI generation temporarily and notify admin
+                    last_error = str(model_err)
+                    logger.error("No verified Free Tier model available: %s", last_error)
+                    if bot is not None:
+                        try:
+                            from services.lesson_service import notify_admins
+
+                            await notify_admins(
+                                bot,
+                                f"⚠️ <b>STRICT GEMINI FREE TIER ALERT</b>\n\n"
+                                f"Hech bir tasdiqlangan Free Tier Gemini modeli hozircha mavjud emas:\n"
+                                f"<code>{last_error}</code>\n\n"
+                                f"✅ AI generatsiya vaqtincha to‘xtatildi ($0.00 xarajat) va kunlik dars PostgreSQL zaxira bazasidan (100–300 so‘z) olindi.",
+                            )
+                        except Exception:
+                            pass
+                    break
                 except Exception as api_err:
-                    last_error = f"AI API error on attempt {attempt}: {api_err}"
+                    last_error = f"Gemini Free Tier API error on attempt {attempt}: {api_err}"
                     logger.warning(last_error)
         else:
-            last_error = "AI_API_KEY not configured; using unused reserve vocabulary pool."
+            last_error = "GEMINI_API_KEY / AI_API_KEY not configured; using PostgreSQL vocabulary reserve."
             logger.info(last_error)
 
-        # 4. Fallback to unused reserve vocabulary respecting remaining 4+2+2+2 category quotas
+        # 4. Fallback to PostgreSQL vocabulary reserve (100-300 unused items) respecting remaining 4+2+2+2 quotas
         if len(accepted_items) < required_count:
-            reserve_items, reserve_dups = self._load_unused_from_reserve_by_quotas(
-                needed_by_category=remaining_quotas,
-                known_normalized=known_normalized,
-                very_count_so_far=very_pattern_count,
+            reserve_items, reserve_dups = (
+                await self._load_unused_from_postgres_and_file_reserve(
+                    session=session,
+                    needed_by_category=remaining_quotas,
+                    known_normalized=known_normalized,
+                    very_count_so_far=very_pattern_count,
+                )
             )
             rejected_duplicates += reserve_dups
             if reserve_items:
@@ -857,7 +1153,6 @@ class AIVocabularyGenerator:
                 error_message=err_msg,
             )
 
-        # Order the final 10 items cleanly: 4 everyday_upgrade, 2 academic_upgrade, 2 collocation, 2 phrasal_verb
         category_order = {
             "everyday_upgrade": 0,
             "academic_upgrade": 1,
@@ -883,13 +1178,6 @@ class AIVocabularyGenerator:
                 rejected_duplicates=rejected_duplicates,
                 retry_count=retry_count,
                 error_message=last_error if used_fallback else None,
-            )
-            logger.info(
-                "Successfully saved %d unique IELTS expressions (4+2+2+2) for %s (status=%s, rejected_dups=%d)",
-                len(final_items),
-                lesson_date,
-                status_label,
-                rejected_duplicates,
             )
             return GenerationResult(
                 success=True,

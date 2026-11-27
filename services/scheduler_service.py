@@ -28,6 +28,9 @@ async def job_generate_daily_lesson(context: ContextTypes.DEFAULT_TYPE) -> None:
             target_date=today,
             bot=context.bot,
         )
+        from services.ai_vocabulary_generator import ai_generator
+
+        await ai_generator.gradually_replenish_vocabulary_reserve(session=session)
         if gen_result and gen_result.success and gen_result.status != "ALREADY_EXISTS":
             msg = (
                 f"✅ <b>Kunlik dars avtomatik yaratildi ({today})</b>\n"

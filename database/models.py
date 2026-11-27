@@ -538,3 +538,220 @@ class UserGameRun(Base):
     played_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+
+# ==============================================================================
+# PERMANENT VOCABULARY ARCHIVE & ADMIN MEMORIZATION SYSTEM MODELS
+# ==============================================================================
+
+
+class VocabularyArchive(Base):
+    __tablename__ = "vocabulary_archive"
+    __table_args__ = (
+        UniqueConstraint(
+            "normalized_expression", name="uq_vocabulary_archive_normalized"
+        ),
+        CheckConstraint(
+            "correct_option >= 0 AND correct_option <= 3",
+            name="ck_vocabulary_archive_correct_opt",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    vocabulary_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("vocabulary.id", ondelete="SET NULL"), nullable=True
+    )
+    normalized_expression: Mapped[str] = mapped_column(
+        String(255), nullable=False, unique=True, index=True
+    )
+    basic_expression: Mapped[str] = mapped_column(String(255), nullable=False)
+    advanced_expression: Mapped[str] = mapped_column(String(255), nullable=False)
+    translation_uz: Mapped[str] = mapped_column(Text, nullable=False)
+    translation_ru: Mapped[str | None] = mapped_column(Text, nullable=True)
+    definition_en: Mapped[str] = mapped_column(Text, nullable=False)
+    basic_example_en: Mapped[str | None] = mapped_column(Text, nullable=True)
+    example_en: Mapped[str] = mapped_column(Text, nullable=False)
+    example_uz: Mapped[str | None] = mapped_column(Text, nullable=True)
+    example_ru: Mapped[str | None] = mapped_column(Text, nullable=True)
+    usage_context: Mapped[str] = mapped_column(
+        String(128), nullable=False, default="Writing Task 2 & Speaking Part 3"
+    )
+    cefr_level: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="B2–C1"
+    )
+    category: Mapped[str] = mapped_column(
+        String(64), nullable=False, default="everyday_upgrade", index=True
+    )
+    original_generation_date: Mapped[date] = mapped_column(
+        Date, nullable=False, index=True
+    )
+    origin_type: Mapped[str] = mapped_column(
+        String(48), nullable=False, default="daily_lesson"
+    )
+    option_a: Mapped[str] = mapped_column(String(255), nullable=False)
+    option_b: Mapped[str] = mapped_column(String(255), nullable=False)
+    option_c: Mapped[str] = mapped_column(String(255), nullable=False)
+    option_d: Mapped[str] = mapped_column(String(255), nullable=False)
+    correct_option: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    def get_options(self) -> list[str]:
+        return [self.option_a, self.option_b, self.option_c, self.option_d]
+
+
+class AdminVocabProgress(Base):
+    __tablename__ = "admin_vocab_progress"
+    __table_args__ = (
+        UniqueConstraint(
+            "admin_id", "archive_id", name="uq_admin_vocab_progress_admin_archive"
+        ),
+        CheckConstraint(
+            "status IN ('unmemorized', 'memorized', 'difficult', 'later')",
+            name="ck_admin_vocab_progress_status",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    admin_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    archive_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("vocabulary_archive.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    status: Mapped[str] = mapped_column(
+        String(24), nullable=False, default="unmemorized"
+    )
+    srs_stage: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    interval_days: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    next_review_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    last_reviewed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    memorized_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    review_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    correct_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    wrong_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_quiz_wrong: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
+class AdminLearningSession(Base):
+    __tablename__ = "admin_learning_sessions"
+    __table_args__ = (
+        UniqueConstraint("admin_id", name="uq_admin_learning_sessions_admin"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    admin_id: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, unique=True, index=True
+    )
+    mode: Mapped[str] = mapped_column(String(64), nullable=False, default="all")
+    filter_meta: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    archive_ids: Mapped[list[int]] = mapped_column(JSON, nullable=False)
+    current_index: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    is_completed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
+class AdminQuizHistory(Base):
+    __tablename__ = "admin_quiz_history"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    admin_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    question_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    correct_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    accuracy: Mapped[int] = mapped_column(Integer, nullable=False)
+    wrong_archive_ids: Mapped[list[int]] = mapped_column(
+        JSON, nullable=False, default=list
+    )
+    filter_mode: Mapped[str] = mapped_column(
+        String(64), nullable=False, default="all"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class VocabularyReserve(Base):
+    """
+    PostgreSQL Vocabulary Reserve Pool (100–300 unique, unused 4+2+2+2 IELTS items).
+    Gradually replenished within Google Gemini Free Tier quotas and used immediately
+    if a 429 quota limit or model unavailability occurs.
+    """
+
+    __tablename__ = "vocabulary_reserve"
+    __table_args__ = (
+        UniqueConstraint(
+            "normalized_expression", name="uq_vocabulary_reserve_normalized"
+        ),
+        CheckConstraint(
+            "correct_option >= 0 AND correct_option <= 3",
+            name="ck_vocabulary_reserve_correct_opt",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    simple_word: Mapped[str] = mapped_column(String(255), nullable=False)
+    advanced_word: Mapped[str] = mapped_column(String(255), nullable=False)
+    normalized_expression: Mapped[str] = mapped_column(
+        String(255), nullable=False, unique=True, index=True
+    )
+    translation_uz: Mapped[str] = mapped_column(Text, nullable=False)
+    translation_ru: Mapped[str] = mapped_column(Text, nullable=False)
+    definition_en: Mapped[str] = mapped_column(Text, nullable=False)
+    basic_example_en: Mapped[str | None] = mapped_column(Text, nullable=True)
+    example_en: Mapped[str] = mapped_column(Text, nullable=False)
+    example_uz: Mapped[str] = mapped_column(Text, nullable=False)
+    example_ru: Mapped[str] = mapped_column(Text, nullable=False)
+    cefr_level: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="B2–C1"
+    )
+    category: Mapped[str] = mapped_column(
+        String(64), nullable=False, default="everyday_upgrade", index=True
+    )
+    ielts_usage: Mapped[str | None] = mapped_column(
+        String(128), nullable=True, default="Writing Task 2 & Speaking Part 3"
+    )
+    source_name: Mapped[str] = mapped_column(
+        String(128), nullable=False, default="Cambridge Dictionary"
+    )
+    source_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    quiz_question_uz: Mapped[str | None] = mapped_column(Text, nullable=True)
+    quiz_question_ru: Mapped[str | None] = mapped_column(Text, nullable=True)
+    quiz_question_en: Mapped[str | None] = mapped_column(Text, nullable=True)
+    option_a: Mapped[str] = mapped_column(String(255), nullable=False)
+    option_b: Mapped[str] = mapped_column(String(255), nullable=False)
+    option_c: Mapped[str] = mapped_column(String(255), nullable=False)
+    option_d: Mapped[str] = mapped_column(String(255), nullable=False)
+    correct_option: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    is_used: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    used_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    def get_options(self) -> list[str]:
+        return [self.option_a, self.option_b, self.option_c, self.option_d]

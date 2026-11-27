@@ -117,14 +117,42 @@ class Config:
     )
 
     AI_PROVIDER: str = field(
-        default_factory=lambda: _clean_env("AI_PROVIDER", "openai").lower()
+        default_factory=lambda: "gemini"
     )
-    AI_API_KEY: str = field(default_factory=lambda: _clean_env("AI_API_KEY", ""))
+    AI_API_KEY: str = field(
+        default_factory=lambda: _clean_env("GEMINI_API_KEY", "")
+        or _clean_env("AI_API_KEY", "")
+    )
+    GEMINI_FREE_TIER_MODELS: tuple[str, ...] = field(
+        default_factory=lambda: tuple(
+            __import__(
+                "services.gemini_free_tier_policy",
+                fromlist=["sanitize_free_tier_whitelist"],
+            ).sanitize_free_tier_whitelist(
+                _clean_env(
+                    "GEMINI_FREE_TIER_MODELS",
+                    "gemini-2.5-flash,gemini-2.5-flash-lite,gemini-2.0-flash,gemini-2.0-flash-lite,gemini-1.5-flash",
+                )
+            )
+        )
+    )
     AI_MODEL: str = field(
-        default_factory=lambda: _clean_env("AI_MODEL", "gpt-4o-mini")
+        default_factory=lambda: __import__(
+            "services.gemini_free_tier_policy",
+            fromlist=["enforce_free_tier_provider_and_model"],
+        ).enforce_free_tier_provider_and_model(
+            _clean_env("AI_PROVIDER", "gemini"),
+            _clean_env("AI_MODEL", "gemini-2.5-flash"),
+        )[1]
     )
-    AI_BASE_URL: str = field(
-        default_factory=lambda: _clean_env("AI_BASE_URL", "")
+    AI_BASE_URL: str = field(default_factory=lambda: "")
+    GEMINI_FREE_TIER_ONLY: bool = True
+    GEMINI_BILLING_DISABLED: bool = True
+    RESERVE_MIN_WORDS: int = field(
+        default_factory=lambda: max(100, int(_clean_env("RESERVE_MIN_WORDS", "100") or "100"))
+    )
+    RESERVE_MAX_WORDS: int = field(
+        default_factory=lambda: min(300, max(100, int(_clean_env("RESERVE_MAX_WORDS", "300") or "300")))
     )
 
     TIMEZONE: str = field(

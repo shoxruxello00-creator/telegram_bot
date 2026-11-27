@@ -75,5 +75,21 @@
   "pack_locked_alert": "🔒 Для открытия этой награды нужно {required} подтверждённых рефералов (У вас: {confirmed}).",
   "pack_header": "🎁 <b>{pack_title}</b> — <b>{index}/{total}</b>\n📊 Изучено: <b>{completed_words}/{total} слов</b> | 🧠 Квизов: <b>{completed_quizzes}</b>\n━━━━━━━━━━━━━━━━━━━━",
   "btn_pack_quiz": "🧠 Начать спец-квиз по набору",
-  "btn_back_to_rewards": "🔙 К списку наград"
+  "btn_back_to_rewards": "🔙 К списку наград",
+  "admin_lib_menu": "📚 Изучение всех слов",
+  "admin_lib_sub_all": "📚 Все слова",
+  "admin_lib_sub_memorize": "🧠 Изучение слов",
+  "admin_lib_sub_quiz": "📝 Тест по всем словам",
+  "admin_lib_sub_search": "🔍 Поиск слов",
+  "admin_lib_sub_date": "📅 Слова по дате",
+  "admin_lib_sub_revision": "🔄 Повторение",
+  "admin_lib_sub_stats": "📊 Статистика изучения",
+  "admin_lib_sub_export": "📥 Экспорт",
+  "admin_fc_memorized": "YODLADIM",
+  "admin_fc_difficult": "QIYIN",
+  "admin_fc_later": "KEYINROQ",
+  "admin_fc_next": "KEYINGI SO‘Z",
+  "admin_fc_prev": "OLDINGI SO‘Z",
+  "admin_fc_flip_back": "🔄 Показать ответ и пример",
+  "admin_fc_flip_front": "🔄 Повернуть карточку"
 }

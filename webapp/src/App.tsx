@@ -42,6 +42,11 @@ const ReferralsModal = lazy(() =>
     default: m.ReferralsModal,
   }))
 );
+const AdminLibraryModal = lazy(() =>
+  import('./components/AdminLibraryModal').then((m) => ({
+    default: m.AdminLibraryModal,
+  }))
+);
 
 export const App: React.FC = () => {
   const queryClient = useQueryClient();
@@ -51,6 +56,7 @@ export const App: React.FC = () => {
     setLang,
     closeModal,
     setActiveTab,
+    openAdminLibrary,
   } = useAppStore();
 
   useEffect(() => {
@@ -76,7 +82,15 @@ export const App: React.FC = () => {
     if (data?.user?.language_code) {
       setLang(data.user.language_code);
     }
-  }, [data?.user?.language_code, setLang]);
+    if (
+      data?.user?.is_admin &&
+      typeof window !== 'undefined' &&
+      new URLSearchParams(window.location.search).get('admin_lib') === '1'
+    ) {
+      openAdminLibrary();
+      window.history.replaceState({}, '', window.location.pathname);
+    }
+  }, [data?.user?.language_code, data?.user?.is_admin, setLang, openAdminLibrary]);
 
   const handleLanguageChange = async (newLang: LanguageCode) => {
     setLang(newLang);
@@ -176,6 +190,9 @@ export const App: React.FC = () => {
           <GamePlayModal onCompleted={handleRefreshAll} />
         )}
         {activeModal === 'referrals' && <ReferralsModal />}
+        {activeModal === 'admin_library' && data.user.is_admin && (
+          <AdminLibraryModal />
+        )}
       </Suspense>
     </div>
   );

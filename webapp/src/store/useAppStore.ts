@@ -8,7 +8,13 @@ import {
   VoxyMood,
 } from '../types/miniapp';
 
-export type ActiveModal = 'flashcards' | 'quiz' | 'game' | 'referrals' | null;
+export type ActiveModal =
+  | 'flashcards'
+  | 'quiz'
+  | 'game'
+  | 'referrals'
+  | 'admin_library'
+  | null;
 
 interface QuizContextConfig {
   mode: 'daily' | 'journey' | 'game' | 'pack';
@@ -37,6 +43,7 @@ interface AppState {
   openQuiz: (config: QuizContextConfig) => void;
   openGameMode: (mode: GameModeId) => void;
   openReferrals: () => void;
+  openAdminLibrary: () => void;
   closeModal: () => void;
 }
 
@@ -87,6 +94,11 @@ export const useAppStore = create<AppState>((set) => ({
     set({
       activeModal: 'referrals',
       voxyMood: 'celebrate',
+    }),
+  openAdminLibrary: () =>
+    set({
+      activeModal: 'admin_library',
+      voxyMood: 'welcome',
     }),
   closeModal: () =>
     set({

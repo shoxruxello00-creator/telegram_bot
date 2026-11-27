@@ -35,6 +35,8 @@ def _run_on_main_loop(coro: Any) -> Any:
     if _MAIN_LOOP is not None and _MAIN_LOOP.is_running():
         future = asyncio.run_coroutine_threadsafe(coro, _MAIN_LOOP)
         return future.result(timeout=8.0)
+    if hasattr(coro, "close"):
+        coro.close()
     return None
 
 
@@ -54,6 +56,7 @@ async def _sync_from_postgres(
             )
             learned_cnt = await crud.get_user_learned_count(session, user_id)
             ref_sum = await crud.get_user_referral_summary(session, user_id)
+            admin_role = await crud.get_admin_role(session, user_id)
             today_words = await crud.get_daily_lesson_words(
                 session, settings.today()
             )
@@ -105,6 +108,7 @@ async def _sync_from_postgres(
                 "today_score": progress.score,
                 "today_earned_xp": progress.earned_xp,
                 "today_words": words_serialized,
+                "admin_role": admin_role,
             }
     except Exception as exc:
         logger.debug("Postgres sync skipped in miniapp_api: %s", exc)
@@ -724,6 +728,51 @@ def _build_achievements(u: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
+def resolve_admin_role(user_id: int) -> str | None:
+    """
+    Strictly verify on the backend whether `user_id` is an authorized Super Admin or Moderator.
+    """
+    if not user_id:
+        return None
+
+    async def _check_pg() -> str | None:
+        try:
+            from database import crud
+            from database.db import get_session
+
+            async with get_session() as session:
+                return await crud.get_admin_role(session, user_id)
+        except Exception:
+            return None
+
+    pg_role = _run_on_main_loop(_check_pg())
+    if pg_role is not None:
+        return pg_role
+    if _MAIN_LOOP is not None and _MAIN_LOOP.is_running():
+        # When connected to live event loop, trustcrud.get_admin_role exclusively
+        return None
+
+    if settings.is_admin(user_id):
+        return "super_admin"
+
+    # Offline/dev fallback: check local moderator registry or preview admin when ADMIN_ID is unset
+    from services.admin_library_service import LOCAL_ADMIN_STATE_PATH
+
+    if LOCAL_ADMIN_STATE_PATH.exists():
+        try:
+            st = json.loads(LOCAL_ADMIN_STATE_PATH.read_text(encoding="utf-8"))
+            extra = st.get("extra_admins", {})
+            if str(user_id) in extra:
+                return str(extra[str(user_id)])
+        except Exception:
+            pass
+
+    if not os.getenv("RENDER") and settings.ADMIN_ID == 0 and user_id == 8838117173:
+        return "super_admin"
+
+    return None
+
+
 def build_bootstrap_payload(
     user_id: int,
     username: str | None = None,
@@ -902,6 +951,11 @@ def build_bootstrap_payload(
     unlocked_packs_cnt = sum(
         1 for p in bonus_packs if confirmed_refs >= p["required_referrals"]
     )
+    admin_role = (
+        pg_data.get("admin_role")
+        if pg_data and "admin_role" in pg_data
+        else resolve_admin_role(int(u["user_id"]))
+    )
 
     return {
         "user": {
@@ -920,6 +974,8 @@ def build_bootstrap_payload(
             "reminders_enabled": bool(u.get("reminders_enabled", True)),
             "broadcast_enabled": bool(u.get("broadcast_enabled", True)),
             "daily_goal": int(u.get("daily_goal", 10)),
+            "is_admin": admin_role is not None,
+            "admin_role": admin_role,
             "badge": "🏆 IELTS Master"
             if confirmed_refs >= 20
             else ("👑 VIP" if confirmed_refs >= 10 else "⚡ Scholar"),
@@ -1333,6 +1389,340 @@ def handle_settings_update(user_id: int, payload: dict[str, Any]) -> dict[str, A
 
 
 # ==============================================================================
+# ADMIN-ONLY PERMANENT VOCABULARY LIBRARY & MEMORIZATION REST HANDLERS
+# ==============================================================================
+
+
+def _load_admin_items_stats_session(
+    admin_id: int,
+) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any] | None]:
+    from services.admin_library_service import admin_library_manager
+
+    async def _pg_fetch() -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any] | None]:
+        from database.db import get_session
+
+        async with get_session() as session:
+            return await admin_library_manager.get_enriched_items_and_stats_pg(
+                session, admin_id
+            )
+
+    pg_res = _run_on_main_loop(_pg_fetch())
+    if pg_res is not None:
+        return pg_res
+    return admin_library_manager.get_enriched_items_and_stats_local(admin_id)
+
+
+def build_admin_library_payload(
+    user_id: int, query: dict[str, str]
+) -> tuple[int, dict[str, Any]]:
+    role = resolve_admin_role(user_id)
+    if role is None:
+        return 403, {"ok": False, "error": "Forbidden: Admin access required"}
+
+    from services.admin_library_service import filter_archive_items
+
+    items, stats, saved_session = _load_admin_items_stats_session(user_id)
+    mode = query.get("mode", "all").strip() or "all"
+    q = query.get("q", "").strip()
+    category = query.get("category", "").strip()
+    date_from = query.get("date_from", "").strip()
+    date_to = query.get("date_to", "").strip()
+
+    page = max(1, int(query.get("page", "1") or "1"))
+    page_size = max(5, min(200, int(query.get("page_size", "20") or "20")))
+
+    filtered = filter_archive_items(
+        items=items,
+        mode=mode,
+        search_query=q,
+        category=category,
+        date_from=date_from,
+        date_to=date_to,
+    )
+    total_filtered = len(filtered)
+    total_pages = max(1, (total_filtered + page_size - 1) // page_size)
+    page = min(page, total_pages)
+    start = (page - 1) * page_size
+    page_items = filtered[start : start + page_size]
+
+    session_enriched = None
+    if saved_session and saved_session.get("archive_ids"):
+        items_by_id = {int(x["id"]): x for x in items}
+        s_items = [
+            items_by_id[int(aid)]
+            for aid in saved_session["archive_ids"]
+            if int(aid) in items_by_id
+        ]
+        if s_items:
+            session_enriched = {
+                **saved_session,
+                "items": s_items,
+            }
+
+    from services.ai_vocabulary_generator import ai_generator
+    from services.gemini_free_tier_policy import gemini_quota_tracker
+
+    all_reserve = ai_generator.load_all_validated_seed_reserve_items()
+    arch_norms = {x["normalized_expression"] for x in items}
+    unused_res_cnt = max(
+        100,
+        len([r for r in all_reserve if r["normalized_expression"] not in arch_norms]),
+    )
+    ai_monitoring = gemini_quota_tracker.get_dashboard_snapshot(
+        whitelist=ai_generator.whitelist,
+        reserve_unused_count=unused_res_cnt,
+        reserve_target_min=settings.RESERVE_MIN_WORDS,
+        reserve_target_max=settings.RESERVE_MAX_WORDS,
+    )
+
+    return 200, {
+        "ok": True,
+        "admin_role": role,
+        "items": page_items,
+        "total_filtered": total_filtered,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": total_pages,
+        "stats": stats,
+        "saved_session": session_enriched,
+        "ai_monitoring": ai_monitoring,
+    }
+
+
+def handle_admin_session_start(
+    user_id: int, payload: dict[str, Any]
+) -> tuple[int, dict[str, Any]]:
+    role = resolve_admin_role(user_id)
+    if role is None:
+        return 403, {"ok": False, "error": "Forbidden: Admin access required"}
+
+    from services.admin_library_service import (
+        admin_library_manager,
+        filter_archive_items,
+    )
+
+    items, _, _ = _load_admin_items_stats_session(user_id)
+    mode = str(payload.get("mode", "all") or "all")
+    q = str(payload.get("q", "") or "")
+    category = str(payload.get("category", "") or "")
+    date_from = str(payload.get("date_from", "") or "")
+    date_to = str(payload.get("date_to", "") or "")
+    size_raw = str(payload.get("session_size", "10") or "10").lower()
+
+    candidates = filter_archive_items(
+        items=items,
+        mode=mode,
+        search_query=q,
+        category=category,
+        date_from=date_from,
+        date_to=date_to,
+    )
+    if size_raw == "all":
+        selected = candidates
+    else:
+        limit = int(size_raw) if size_raw.isdigit() else 10
+        selected = candidates[: max(1, limit)]
+
+    aids = [int(x["id"]) for x in selected]
+    filter_meta = {
+        "q": q,
+        "category": category,
+        "date_from": date_from,
+        "date_to": date_to,
+    }
+
+    async def _pg_save() -> dict[str, Any]:
+        from database.db import get_session
+
+        async with get_session() as session:
+            return await admin_library_manager.save_learning_session_pg(
+                session, user_id, mode, aids, 0, filter_meta
+            )
+
+    sess_info = _run_on_main_loop(_pg_save())
+    if sess_info is None:
+        sess_info = admin_library_manager.save_learning_session_local(
+            user_id, mode, aids, 0, filter_meta
+        )
+
+    return 200, {
+        "ok": True,
+        "session": sess_info,
+        "items": selected,
+    }
+
+
+def handle_admin_flashcard_update(
+    user_id: int, payload: dict[str, Any]
+) -> tuple[int, dict[str, Any]]:
+    role = resolve_admin_role(user_id)
+    if role is None:
+        return 403, {"ok": False, "error": "Forbidden: Admin access required"}
+
+    from services.admin_library_service import admin_library_manager
+
+    action = str(payload.get("action", "memorized") or "memorized")
+    archive_id = int(payload.get("archive_id", 0))
+    session_index = (
+        int(payload["session_index"])
+        if payload.get("session_index") is not None
+        else None
+    )
+
+    if action == "nav" and session_index is not None:
+        mode = str(payload.get("mode", "all"))
+        aids = [int(x) for x in payload.get("archive_ids", [])]
+
+        async def _pg_nav() -> dict[str, Any]:
+            from database.db import get_session
+
+            async with get_session() as session:
+                return await admin_library_manager.save_learning_session_pg(
+                    session, user_id, mode, aids, session_index
+                )
+
+        res_nav = _run_on_main_loop(_pg_nav())
+        if res_nav is None:
+            res_nav = admin_library_manager.save_learning_session_local(
+                user_id, mode, aids, session_index
+            )
+        return 200, {"ok": True, "session": res_nav}
+
+    if archive_id <= 0 or action not in ("memorized", "difficult", "later"):
+        return 400, {"ok": False, "error": "Invalid archive_id or action"}
+
+    async def _pg_upd() -> dict[str, Any]:
+        from database.db import get_session
+
+        async with get_session() as session:
+            return await admin_library_manager.update_flashcard_progress_pg(
+                session, user_id, archive_id, action, session_index
+            )
+
+    res = _run_on_main_loop(_pg_upd())
+    if res is None:
+        res = admin_library_manager.update_flashcard_progress_local(
+            user_id, archive_id, action, session_index
+        )
+    return 200, res
+
+
+def build_admin_quiz_payload(
+    user_id: int, query: dict[str, str]
+) -> tuple[int, dict[str, Any]]:
+    role = resolve_admin_role(user_id)
+    if role is None:
+        return 403, {"ok": False, "error": "Forbidden: Admin access required"}
+
+    from services.admin_library_service import (
+        filter_archive_items,
+        generate_randomized_quiz_from_items,
+    )
+
+    items, _, _ = _load_admin_items_stats_session(user_id)
+    retry_raw = query.get("retry_ids", "").strip()
+    if retry_raw:
+        retry_set = {int(x) for x in retry_raw.split(",") if x.strip().isdigit()}
+        candidates = [x for x in items if int(x["id"]) in retry_set]
+        q_count = len(candidates)
+    else:
+        mode = query.get("mode", "all").strip() or "all"
+        q = query.get("q", "").strip()
+        category = query.get("category", "").strip()
+        date_from = query.get("date_from", "").strip()
+        date_to = query.get("date_to", "").strip()
+        candidates = filter_archive_items(
+            items=items,
+            mode=mode,
+            search_query=q,
+            category=category,
+            date_from=date_from,
+            date_to=date_to,
+        )
+        raw_cnt = query.get("count", "10").strip()
+        q_count = int(raw_cnt) if raw_cnt.isdigit() and int(raw_cnt) > 0 else 10
+
+    if not candidates:
+        return 200, {"ok": True, "questions": [], "total": 0}
+
+    questions = generate_randomized_quiz_from_items(
+        candidate_items=candidates,
+        all_archive_items=items,
+        question_count=min(500, q_count),
+    )
+    return 200, {"ok": True, "questions": questions, "total": len(questions)}
+
+
+def handle_admin_quiz_submit(
+    user_id: int, payload: dict[str, Any]
+) -> tuple[int, dict[str, Any]]:
+    role = resolve_admin_role(user_id)
+    if role is None:
+        return 403, {"ok": False, "error": "Forbidden: Admin access required"}
+
+    from services.admin_library_service import admin_library_manager
+
+    filter_mode = str(payload.get("mode", "all") or "all")
+    submissions = list(payload.get("submissions") or [])
+    if not submissions:
+        return 400, {"ok": False, "error": "No quiz submissions provided"}
+
+    async def _pg_sub() -> dict[str, Any]:
+        from database.db import get_session
+
+        async with get_session() as session:
+            return await admin_library_manager.submit_admin_quiz_pg(
+                session, user_id, filter_mode, submissions
+            )
+
+    res = _run_on_main_loop(_pg_sub())
+    if res is None:
+        res = admin_library_manager.submit_admin_quiz_local(
+            user_id, filter_mode, submissions
+        )
+    return 200, res
+
+
+def handle_admin_export(
+    user_id: int, query: dict[str, str]
+) -> tuple[int, bytes | dict[str, Any], str, str]:
+    role = resolve_admin_role(user_id)
+    if role is None:
+        return (
+            403,
+            {"ok": False, "error": "Forbidden: Admin access required"},
+            "application/json",
+            "",
+        )
+
+    from services.admin_library_service import (
+        admin_library_manager,
+        filter_archive_items,
+    )
+
+    items, _, _ = _load_admin_items_stats_session(user_id)
+    scope = query.get("scope", "all").strip()
+    fmt = query.get("format", "csv").strip().lower()
+
+    if scope == "filtered":
+        export_items = filter_archive_items(
+            items=items,
+            mode=query.get("mode", "all"),
+            search_query=query.get("q", ""),
+            category=query.get("category", ""),
+            date_from=query.get("date_from", ""),
+            date_to=query.get("date_to", ""),
+        )
+    else:
+        export_items = items
+
+    data_bytes, content_type, filename = admin_library_manager.build_export_bytes(
+        export_items, fmt=fmt
+    )
+    return 200, data_bytes, content_type, filename
+
+
+# ==============================================================================
 # HTTP REQUEST HANDLER FOR MINI APP API + SPA STATIC FILES
 # ==============================================================================
 
@@ -1357,8 +1747,28 @@ class MiniAppHTTPRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _extract_authenticated_user(self) -> tuple[int, str | None, str | None]:
+    def _send_bytes(
+        self, status_code: int, content: bytes, content_type: str, filename: str
+    ) -> None:
+        self.send_response(status_code)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(content)))
+        self.send_header(
+            "Content-Disposition", f'attachment; filename="{filename}"'
+        )
+        self._send_cors_headers()
+        self.end_headers()
+        self.wfile.write(content)
+
+    def _extract_authenticated_user(
+        self,
+        query: dict[str, str] | None = None,
+        strict_admin_route: bool = False,
+    ) -> tuple[int, str | None, str | None]:
         init_data = self.headers.get("X-Telegram-Init-Data", "").strip()
+        if not init_data and query:
+            init_data = query.get("init_data", "").strip()
+
         if init_data and settings.BOT_TOKEN:
             tg_user = verify_telegram_init_data(init_data, settings.BOT_TOKEN)
             if tg_user and "id" in tg_user:
@@ -1369,6 +1779,11 @@ class MiniAppHTTPRequestHandler(BaseHTTPRequestHandler):
                     or "Learner"
                 )
                 return uid, uname, fname
+            if strict_admin_route:
+                return 0, None, None
+
+        if strict_admin_route and os.getenv("RENDER"):
+            return 0, None, None
 
         header_uid = self.headers.get("X-Telegram-User-Id", "").strip()
         if header_uid.isdigit():
@@ -1415,8 +1830,35 @@ class MiniAppHTTPRequestHandler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/miniapp/referrals":
-            uid, _, _ = self._extract_authenticated_user()
+            uid, _, _ = self._extract_authenticated_user(query)
             self._send_json(200, build_referrals_payload(uid))
+            return
+
+        if path == "/api/miniapp/admin/library":
+            uid, _, _ = self._extract_authenticated_user(
+                query, strict_admin_route=True
+            )
+            code, resp = build_admin_library_payload(uid, query)
+            self._send_json(code, resp)
+            return
+
+        if path == "/api/miniapp/admin/quiz":
+            uid, _, _ = self._extract_authenticated_user(
+                query, strict_admin_route=True
+            )
+            code, resp = build_admin_quiz_payload(uid, query)
+            self._send_json(code, resp)
+            return
+
+        if path == "/api/miniapp/admin/export":
+            uid, _, _ = self._extract_authenticated_user(
+                query, strict_admin_route=True
+            )
+            code, data_or_err, ctype, fname = handle_admin_export(uid, query)
+            if code != 200 or isinstance(data_or_err, dict):
+                self._send_json(code, data_or_err if isinstance(data_or_err, dict) else {"error": "Export failed"})
+            else:
+                self._send_bytes(200, data_or_err, ctype, fname)
             return
 
         # Serve static files from webapp/dist if built
@@ -1460,6 +1902,30 @@ class MiniAppHTTPRequestHandler(BaseHTTPRequestHandler):
 
         if path == "/api/miniapp/settings":
             self._send_json(200, handle_settings_update(uid, payload))
+            return
+
+        if path == "/api/miniapp/admin/session":
+            admin_uid, _, _ = self._extract_authenticated_user(
+                strict_admin_route=True
+            )
+            code, resp = handle_admin_session_start(admin_uid, payload)
+            self._send_json(code, resp)
+            return
+
+        if path == "/api/miniapp/admin/flashcard":
+            admin_uid, _, _ = self._extract_authenticated_user(
+                strict_admin_route=True
+            )
+            code, resp = handle_admin_flashcard_update(admin_uid, payload)
+            self._send_json(code, resp)
+            return
+
+        if path == "/api/miniapp/admin/quiz/submit":
+            admin_uid, _, _ = self._extract_authenticated_user(
+                strict_admin_route=True
+            )
+            code, resp = handle_admin_quiz_submit(admin_uid, payload)
+            self._send_json(code, resp)
             return
 
         self._send_json(404, {"error": "Endpoint not found"})
